@@ -14,6 +14,7 @@ import java.io.File;
  * موتور اصلی ریستور - قلب ریکاوری
  * ریستور کامل: نصب APK + بازگردانی Internal + DE + External + OBB
  * + اصلاح ownership و SELinux context
+ * از tar استفاده می‌کنیم تا با بکاپ سازگار باشه
  */
 public class RestoreEngine {
     private static final String TAG = "RestoreEngine";
@@ -253,28 +254,29 @@ public class RestoreEngine {
     }
 
     /**
-     * ریستور Internal Data به /data/data/<pkg>
+     * ریستور Internal Data به /data/data/<pkg> (با tar)
      */
     private BackupResult restoreInternalData(String packageName, File dataDir, int uid) {
         try {
             String targetPath = "/data/data/" + packageName;
 
             // پاک کردن داده‌ی فعلی
-            String clearCmd = "rm -rf " + targetPath + "/*";
-            RootShell.run(clearCmd);
+            RootShell.run("rm -rf " + targetPath + "/*");
 
-            // کپی داده‌ی جدید
-            String copyCmd = "cp -aR --preserve=all "
-                    + RootShell.escapePath(dataDir.getAbsolutePath() + "/.")
-                    + " " + targetPath + "/";
-            RootShell.Result r = RootShell.run(copyCmd);
-            if (!r.success) {
-                return BackupResult.failure("Internal data restore failed: " + r.allOutput());
+            // ریستور با tar
+            String tarCmd = "cd " + RootShell.escapePath(dataDir.getAbsolutePath())
+                    + " && tar -cf - --warning=no-file-ignored . 2>/dev/null"
+                    + " | tar -xf - -C " + targetPath;
+            RootShell.Result r = RootShell.run(tarCmd);
+
+            // چک با لیست فایل‌ها
+            RootShell.Result lsResult = RootShell.run("ls -A " + targetPath + " | head -1");
+            if (lsResult.stdout.trim().isEmpty()) {
+                return BackupResult.failure("Internal data restore failed - no files: " + r.allOutput());
             }
 
             // اصلاح ownership (مهم!)
-            String chownCmd = "chown -R " + uid + ":" + uid + " " + targetPath;
-            RootShell.run(chownCmd);
+            RootShell.run("chown -R " + uid + ":" + uid + " " + targetPath);
 
             return BackupResult.success("Internal data restored");
         } catch (Exception e) {
@@ -283,52 +285,64 @@ public class RestoreEngine {
     }
 
     /**
-     * ریستور Device-Protected Data
+     * ریستور Device-Protected Data (با tar)
      */
     private void restoreDeData(String packageName, File deDir, int uid) {
-        String targetPath = "/data/user_de/0/" + packageName;
-        if (!RootShell.dirExists(targetPath)) {
-            // اگه پوشه نیست، بسازش
-            RootShell.run("mkdir -p " + targetPath);
-        } else {
-            RootShell.run("rm -rf " + targetPath + "/*");
+        try {
+            String targetPath = "/data/user_de/0/" + packageName;
+            
+            if (!RootShell.dirExists(targetPath)) {
+                RootShell.run("mkdir -p " + targetPath);
+            } else {
+                RootShell.run("rm -rf " + targetPath + "/*");
+            }
+
+            String tarCmd = "cd " + RootShell.escapePath(deDir.getAbsolutePath())
+                    + " && tar -cf - --warning=no-file-ignored . 2>/dev/null"
+                    + " | tar -xf - -C " + targetPath;
+            RootShell.run(tarCmd);
+
+            // اصلاح ownership
+            RootShell.run("chown -R " + uid + ":" + uid + " " + targetPath);
+        } catch (Exception e) {
+            Log.e(TAG, "DE data restore error", e);
         }
-
-        String copyCmd = "cp -aR --preserve=all "
-                + RootShell.escapePath(deDir.getAbsolutePath() + "/.")
-                + " " + targetPath + "/";
-        RootShell.run(copyCmd);
-
-        // اصلاح ownership
-        RootShell.run("chown -R " + uid + ":" + uid + " " + targetPath);
     }
 
     /**
-     * ریستور External Data به /sdcard/Android/data/<pkg>
+     * ریستور External Data به /sdcard/Android/data/<pkg> (با tar)
      */
     private void restoreExternalData(String packageName, File extDir) {
-        String targetPath = "/sdcard/Android/data/" + packageName;
-        RootShell.run("mkdir -p " + targetPath);
-        RootShell.run("rm -rf " + targetPath + "/*");
+        try {
+            String targetPath = "/sdcard/Android/data/" + packageName;
+            RootShell.run("mkdir -p " + targetPath);
+            RootShell.run("rm -rf " + targetPath + "/*");
 
-        String copyCmd = "cp -aR --preserve=all "
-                + RootShell.escapePath(extDir.getAbsolutePath() + "/.")
-                + " " + targetPath + "/";
-        RootShell.run(copyCmd);
+            String tarCmd = "cd " + RootShell.escapePath(extDir.getAbsolutePath())
+                    + " && tar -cf - --warning=no-file-ignored . 2>/dev/null"
+                    + " | tar -xf - -C " + targetPath;
+            RootShell.run(tarCmd);
+        } catch (Exception e) {
+            Log.e(TAG, "External data restore error", e);
+        }
     }
 
     /**
-     * ریستور OBB Files
+     * ریستور OBB Files (با tar)
      */
     private void restoreObb(String packageName, File obbDir) {
-        String targetPath = "/sdcard/Android/obb/" + packageName;
-        RootShell.run("mkdir -p " + targetPath);
-        RootShell.run("rm -rf " + targetPath + "/*");
+        try {
+            String targetPath = "/sdcard/Android/obb/" + packageName;
+            RootShell.run("mkdir -p " + targetPath);
+            RootShell.run("rm -rf " + targetPath + "/*");
 
-        String copyCmd = "cp -aR --preserve=all "
-                + RootShell.escapePath(obbDir.getAbsolutePath() + "/.")
-                + " " + targetPath + "/";
-        RootShell.run(copyCmd);
+            String tarCmd = "cd " + RootShell.escapePath(obbDir.getAbsolutePath())
+                    + " && tar -cf - --warning=no-file-ignored . 2>/dev/null"
+                    + " | tar -xf - -C " + targetPath;
+            RootShell.run(tarCmd);
+        } catch (Exception e) {
+            Log.e(TAG, "OBB restore error", e);
+        }
     }
 
     /**
@@ -343,7 +357,7 @@ public class RestoreEngine {
             RootShell.run("restorecon -R /data/user_de/0/" + packageName);
         }
 
-        // External data (معمولاً نیاز نیست ولی محکم‌کاری)
+        // External data
         if (RootShell.dirExists("/sdcard/Android/data/" + packageName)) {
             RootShell.run("restorecon -R /sdcard/Android/data/" + packageName);
         }
