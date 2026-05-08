@@ -13,7 +13,8 @@ import java.util.UUID;
 
 /**
  * موتور اصلی بکاپ - قلب اپ
- * بکاپ کامل می‌گیره: APK + Splits + Internal + DE + External + OBB + Metadata
+ * بکاپ کامل: APK + Splits + Internal + DE + External + OBB + Metadata
+ * از tar استفاده می‌کنیم تا socket files و SELinux issues رو دور بزنیم
  */
 public class BackupEngine {
     private static final String TAG = "BackupEngine";
@@ -57,7 +58,8 @@ public class BackupEngine {
 
             // مرحله ۲: بررسی نصب بودن اپ
             updateProgress("Checking app...", 5);
-            if (!RootShell.dirExists("/data/data/" + packageName)) {
+            String dataPath = "/data/data/" + packageName;
+            if (!RootShell.dirExists(dataPath)) {
                 return BackupResult.failure("App data not found: " + packageName);
             }
 
@@ -72,7 +74,7 @@ public class BackupEngine {
             // مرحله ۴: گرفتن اطلاعات اپ
             updateProgress("Getting app info...", 10);
             int uid = RootShell.getAppUid(packageName);
-            String selinuxContext = RootShell.getSelinuxContext("/data/data/" + packageName);
+            String selinuxContext = RootShell.getSelinuxContext(dataPath);
 
             // ساخت metadata اولیه
             BackupMeta meta = new BackupMeta();
@@ -96,10 +98,10 @@ public class BackupEngine {
             updateProgress("Backing up APK...", 18);
             if (appInfo.getApkPath() != null && !appInfo.getApkPath().isEmpty()) {
                 File apkDest = new File(backupDir, "base.apk");
-                String cmd = "cp -a " + RootShell.escapePath(appInfo.getApkPath())
+                String cmd = "cp " + RootShell.escapePath(appInfo.getApkPath())
                         + " " + RootShell.escapePath(apkDest.getAbsolutePath());
                 RootShell.Result r = RootShell.run(cmd);
-                if (r.success) {
+                if (r.success && apkDest.exists() && apkDest.length() > 0) {
                     meta.setHasApk(true);
                 } else {
                     Log.w(TAG, "APK backup failed: " + r.allOutput());
@@ -115,10 +117,10 @@ public class BackupEngine {
                 for (String splitPath : appInfo.getSplitApkPaths()) {
                     File splitFile = new File(splitPath);
                     File dest = new File(splitsDir, splitFile.getName());
-                    String cmd = "cp -a " + RootShell.escapePath(splitPath)
+                    String cmd = "cp " + RootShell.escapePath(splitPath)
                             + " " + RootShell.escapePath(dest.getAbsolutePath());
                     RootShell.Result r = RootShell.run(cmd);
-                    if (!r.success) {
+                    if (!r.success || !dest.exists()) {
                         allOk = false;
                         Log.w(TAG, "Split backup failed: " + r.allOutput());
                     }
@@ -126,18 +128,25 @@ public class BackupEngine {
                 meta.setHasSplitApks(allOk);
             }
 
-            // مرحله ۸: بکاپ Internal Data (مهم‌ترین) ⭐
+            // مرحله ۸: بکاپ Internal Data ⭐ (با tar)
             updateProgress("Backing up internal data...", 40);
             File dataDir = new File(backupDir, "data");
             FileUtils.ensureDir(dataDir);
-            String cmd = "cp -aR --preserve=all /data/data/" + packageName + "/. "
-                    + RootShell.escapePath(dataDir.getAbsolutePath() + "/");
-            RootShell.Result r = RootShell.run(cmd);
-            if (r.success) {
+            
+            String tarCmd = "cd " + dataPath
+                    + " && tar -cf - --exclude='./cache' --exclude='./code_cache' --exclude='./lib' "
+                    + " --warning=no-file-ignored "
+                    + " . 2>/dev/null | tar -xf - -C "
+                    + RootShell.escapePath(dataDir.getAbsolutePath());
+            RootShell.Result r = RootShell.run(tarCmd);
+            
+            // چک می‌کنیم بکاپ موفق بود (با لیست کردن فایل‌ها)
+            File[] backedUp = dataDir.listFiles();
+            if (backedUp != null && backedUp.length > 0) {
                 meta.setHasInternalData(true);
+                Log.d(TAG, "Internal data backed up: " + backedUp.length + " items");
             } else {
-                // بدون این بکاپ بی‌فایده‌ست
-                throw new Exception("Internal data backup failed: " + r.allOutput());
+                throw new Exception("Internal data backup failed - no files copied: " + r.allOutput());
             }
 
             // مرحله ۹: بکاپ Device-Protected Data (Direct Boot)
@@ -146,13 +155,20 @@ public class BackupEngine {
             if (RootShell.dirExists(dePath)) {
                 File deDir = new File(backupDir, "data_de");
                 FileUtils.ensureDir(deDir);
-                cmd = "cp -aR --preserve=all " + dePath + "/. "
-                        + RootShell.escapePath(deDir.getAbsolutePath() + "/");
-                r = RootShell.run(cmd);
-                if (r.success) {
+                
+                String tarDeCmd = "cd " + dePath
+                        + " && tar -cf - --exclude='./cache' --exclude='./code_cache' "
+                        + " --warning=no-file-ignored "
+                        + " . 2>/dev/null | tar -xf - -C "
+                        + RootShell.escapePath(deDir.getAbsolutePath());
+                r = RootShell.run(tarDeCmd);
+                
+                File[] deFiles = deDir.listFiles();
+                if (deFiles != null && deFiles.length > 0) {
                     meta.setHasDeviceProtectedData(true);
+                    Log.d(TAG, "DE data backed up: " + deFiles.length + " items");
                 } else {
-                    Log.w(TAG, "DE data backup failed: " + r.allOutput());
+                    Log.w(TAG, "DE data backup empty: " + r.allOutput());
                 }
             }
 
@@ -162,13 +178,18 @@ public class BackupEngine {
             if (RootShell.dirExists(extPath)) {
                 File extDir = new File(backupDir, "ext_data");
                 FileUtils.ensureDir(extDir);
-                cmd = "cp -aR --preserve=all " + extPath + "/. "
-                        + RootShell.escapePath(extDir.getAbsolutePath() + "/");
-                r = RootShell.run(cmd);
-                if (r.success) {
+                
+                String tarExtCmd = "cd " + extPath
+                        + " && tar -cf - --exclude='./cache' --warning=no-file-ignored . 2>/dev/null"
+                        + " | tar -xf - -C " + RootShell.escapePath(extDir.getAbsolutePath());
+                r = RootShell.run(tarExtCmd);
+                
+                File[] extFiles = extDir.listFiles();
+                if (extFiles != null && extFiles.length > 0) {
                     meta.setHasExternalData(true);
+                    Log.d(TAG, "External data backed up: " + extFiles.length + " items");
                 } else {
-                    Log.w(TAG, "External data backup failed: " + r.allOutput());
+                    Log.w(TAG, "External data backup empty: " + r.allOutput());
                 }
             }
 
@@ -178,13 +199,18 @@ public class BackupEngine {
             if (RootShell.dirExists(obbPath)) {
                 File obbDir = new File(backupDir, "obb");
                 FileUtils.ensureDir(obbDir);
-                cmd = "cp -aR --preserve=all " + obbPath + "/. "
-                        + RootShell.escapePath(obbDir.getAbsolutePath() + "/");
-                r = RootShell.run(cmd);
-                if (r.success) {
+                
+                String tarObbCmd = "cd " + obbPath
+                        + " && tar -cf - --warning=no-file-ignored . 2>/dev/null"
+                        + " | tar -xf - -C " + RootShell.escapePath(obbDir.getAbsolutePath());
+                r = RootShell.run(tarObbCmd);
+                
+                File[] obbFiles = obbDir.listFiles();
+                if (obbFiles != null && obbFiles.length > 0) {
                     meta.setHasObb(true);
+                    Log.d(TAG, "OBB backed up: " + obbFiles.length + " items");
                 } else {
-                    Log.w(TAG, "OBB backup failed: " + r.allOutput());
+                    Log.w(TAG, "OBB backup empty: " + r.allOutput());
                 }
             }
 
@@ -193,8 +219,7 @@ public class BackupEngine {
             long totalSize = FileUtils.getFolderSize(backupDir);
             meta.setTotalSize(totalSize);
 
-            // مرحله ۱۳: تغییر مالکیت پوشه‌ی بکاپ به user عادی
-            // (تا اپ بتونه بعداً بخونتش)
+            // مرحله ۱۳: تنظیم permissions پوشه‌ی بکاپ
             updateProgress("Fixing permissions...", 95);
             String chmodCmd = "chmod -R 755 " + RootShell.escapePath(backupDir.getAbsolutePath());
             RootShell.run(chmodCmd);
