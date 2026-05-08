@@ -4,22 +4,12 @@ import android.util.Log;
 
 import com.topjohnwu.superuser.Shell;
 
-import java.util.List;
-
 /**
  * موتور اجرای دستورات root با libsu
- * از یک persistent shell استفاده می‌کنه که خیلی سریع‌تره
+ * تنظیمات اولیه‌ی Shell توی AppBackupApplication انجام میشه (نه اینجا)
  */
 public class RootShell {
     private static final String TAG = "RootShell";
-
-    // تنظیمات اولیه‌ی libsu - باید توی Application class صدا زده بشه
-    static {
-        Shell.enableVerboseLogging = false;
-        Shell.setDefaultBuilder(Shell.Builder.create()
-                .setFlags(Shell.FLAG_REDIRECT_STDERR)
-                .setTimeout(60));
-    }
 
     /**
      * نتیجه‌ی اجرای یک دستور
