@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">App Backup Pro</string>
+
+    <!-- Main -->
+    <string name="search_apps">Search apps...</string>
+    <string name="show_system_apps">Show system apps</string>
+    <string name="view_all_backups">View All Backups</string>
+    <string name="no_apps_found">No apps found</string>
+
+    <!-- Status -->
+    <string name="checking_root">Checking root...</string>
+    <string name="root_granted">✓ Root access granted</string>
+    <string name="root_denied">✗ Root access denied</string>
+
+    <!-- Buttons -->
+    <string name="backup">Backup</string>
+    <string name="restore">Restore</string>
+    <string name="delete">Delete</string>
+    <string name="rename">Rename</string>
+    <string name="cancel">Cancel</string>
+    <string name="ok">OK</string>
+
+    <!-- Dialogs -->
+    <string name="backup_name_hint">Backup name (optional)</string>
+    <string name="confirm_backup">Create a backup of this app?</string>
+    <string name="confirm_restore">This will replace current app data. Continue?</string>
+    <string name="confirm_delete">Delete this backup? This cannot be undone.</string>
+
+    <!-- Backups -->
+    <string name="backups">Backups</string>
+    <string name="no_backups">No backups yet</string>
+    <string name="select_backup">Select backup to restore</string>
+
+    <!-- Status -->
+    <string name="creating_backup">Creating Backup</string>
+    <string name="restoring_backup">Restoring Backup</string>
+    <string name="backup_successful">Backup Successful ✓</string>
+    <string name="backup_failed">Backup Failed ✗</string>
+    <string name="restore_successful">Restore Successful ✓</string>
+    <string name="restore_failed">Restore Failed ✗</string>
+</resources>

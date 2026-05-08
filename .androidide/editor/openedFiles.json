@@ -1,0 +1,425 @@
+{
+  "allFiles": [
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/appbackup  pro/app/src/main/java/com/appbackup/pro/MainActivity.java",
+      "selection": {
+        "end": {
+          "column": 1,
+          "index": 10789,
+          "line": 311
+        },
+        "start": {
+          "column": 1,
+          "index": 10789,
+          "line": 311
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/appbackup  pro/app/src/main/java/com/appbackup/pro/core/RootShell.java",
+      "selection": {
+        "end": {
+          "column": 1,
+          "index": 5297,
+          "line": 179
+        },
+        "start": {
+          "column": 1,
+          "index": 5297,
+          "line": 179
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/appbackup  pro/app/src/main/java/com/appbackup/pro/models/BackupMeta.java",
+      "selection": {
+        "end": {
+          "column": 1,
+          "index": 5193,
+          "line": 127
+        },
+        "start": {
+          "column": 1,
+          "index": 5193,
+          "line": 127
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/appbackup  pro/app/src/main/java/com/appbackup/pro/models/BackupResult.java",
+      "selection": {
+        "end": {
+          "column": 1,
+          "index": 1778,
+          "line": 55
+        },
+        "start": {
+          "column": 1,
+          "index": 1778,
+          "line": 55
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/appbackup  pro/app/src/main/java/com/appbackup/pro/models/AppInfo.java",
+      "selection": {
+        "end": {
+          "column": 1,
+          "index": 2211,
+          "line": 65
+        },
+        "start": {
+          "column": 1,
+          "index": 2211,
+          "line": 65
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/appbackup  pro/app/src/main/java/com/appbackup/pro/utils/FileUtils.java",
+      "selection": {
+        "end": {
+          "column": 1,
+          "index": 4656,
+          "line": 158
+        },
+        "start": {
+          "column": 1,
+          "index": 4656,
+          "line": 158
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/appbackup  pro/app/src/main/java/com/appbackup/pro/utils/AppUtils.java",
+      "selection": {
+        "end": {
+          "column": 1,
+          "index": 5367,
+          "line": 151
+        },
+        "start": {
+          "column": 1,
+          "index": 5367,
+          "line": 151
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/appbackup  pro/app/src/main/java/com/appbackup/pro/utils/PermissionHelper.java",
+      "selection": {
+        "end": {
+          "column": 1,
+          "index": 3029,
+          "line": 78
+        },
+        "start": {
+          "column": 1,
+          "index": 3029,
+          "line": 78
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/appbackup  pro/app/src/main/java/com/appbackup/pro/core/BackupEngine.java",
+      "selection": {
+        "end": {
+          "column": 1,
+          "index": 9366,
+          "line": 224
+        },
+        "start": {
+          "column": 1,
+          "index": 9366,
+          "line": 224
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/appbackup  pro/app/src/main/java/com/appbackup/pro/core/RestoreEngine.java",
+      "selection": {
+        "end": {
+          "column": 1,
+          "index": 13401,
+          "line": 350
+        },
+        "start": {
+          "column": 1,
+          "index": 13401,
+          "line": 350
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/appbackup  pro/app/src/main/java/com/appbackup/pro/core/BackupRepository.java",
+      "selection": {
+        "end": {
+          "column": 1,
+          "index": 4652,
+          "line": 166
+        },
+        "start": {
+          "column": 1,
+          "index": 4652,
+          "line": 166
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/appbackup  pro/app/src/main/java/com/appbackup/pro/ui/ProgressDialogHelper.java",
+      "selection": {
+        "end": {
+          "column": 1,
+          "index": 2982,
+          "line": 100
+        },
+        "start": {
+          "column": 1,
+          "index": 2982,
+          "line": 100
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/appbackup  pro/app/src/main/java/com/appbackup/pro/ui/AppListAdapter.java",
+      "selection": {
+        "end": {
+          "column": 1,
+          "index": 4200,
+          "line": 134
+        },
+        "start": {
+          "column": 1,
+          "index": 4200,
+          "line": 134
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/appbackup  pro/app/src/main/java/com/appbackup/pro/ui/BackupListAdapter.java",
+      "selection": {
+        "end": {
+          "column": 1,
+          "index": 4660,
+          "line": 133
+        },
+        "start": {
+          "column": 1,
+          "index": 4660,
+          "line": 133
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/appbackup  pro/app/src/main/java/com/appbackup/pro/BackupListActivity.java",
+      "selection": {
+        "end": {
+          "column": 1,
+          "index": 6787,
+          "line": 183
+        },
+        "start": {
+          "column": 1,
+          "index": 6787,
+          "line": 183
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/appbackup  pro/app/src/main/res/layout/activity_main.xml",
+      "selection": {
+        "end": {
+          "column": 15,
+          "index": 4732,
+          "line": 131
+        },
+        "start": {
+          "column": 15,
+          "index": 4732,
+          "line": 131
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/appbackup  pro/app/src/main/res/layout/activity_backup_list.xml",
+      "selection": {
+        "end": {
+          "column": 15,
+          "index": 2560,
+          "line": 72
+        },
+        "start": {
+          "column": 15,
+          "index": 2560,
+          "line": 72
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/appbackup  pro/app/src/main/res/layout/item_app.xml",
+      "selection": {
+        "end": {
+          "column": 52,
+          "index": 5153,
+          "line": 122
+        },
+        "start": {
+          "column": 52,
+          "index": 5153,
+          "line": 122
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/appbackup  pro/app/src/main/res/layout/item_backup.xml",
+      "selection": {
+        "end": {
+          "column": 52,
+          "index": 4702,
+          "line": 117
+        },
+        "start": {
+          "column": 52,
+          "index": 4702,
+          "line": 117
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/appbackup  pro/app/src/main/res/layout/dialog_progress.xml",
+      "selection": {
+        "end": {
+          "column": 15,
+          "index": 1868,
+          "line": 53
+        },
+        "start": {
+          "column": 15,
+          "index": 1868,
+          "line": 53
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/appbackup  pro/app/src/main/res/values/colors.xml",
+      "selection": {
+        "end": {
+          "column": 12,
+          "index": 820,
+          "line": 26
+        },
+        "start": {
+          "column": 12,
+          "index": 820,
+          "line": 26
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/appbackup  pro/app/src/main/res/values/strings.xml",
+      "selection": {
+        "end": {
+          "column": 12,
+          "index": 1761,
+          "line": 41
+        },
+        "start": {
+          "column": 12,
+          "index": 1761,
+          "line": 41
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/appbackup  pro/app/src/main/res/values/themes.xml",
+      "selection": {
+        "end": {
+          "column": 12,
+          "index": 1056,
+          "line": 26
+        },
+        "start": {
+          "column": 12,
+          "index": 1056,
+          "line": 26
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/appbackup  pro/app/src/main/res/drawable/bg_search.xml",
+      "selection": {
+        "end": {
+          "column": 8,
+          "index": 311,
+          "line": 8
+        },
+        "start": {
+          "column": 8,
+          "index": 311,
+          "line": 8
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/appbackup  pro/app/src/main/res/drawable/bg_label.xml",
+      "selection": {
+        "end": {
+          "column": 8,
+          "index": 226,
+          "line": 5
+        },
+        "start": {
+          "column": 8,
+          "index": 226,
+          "line": 5
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/appbackup  pro/app/src/main/AndroidManifest.xml",
+      "selection": {
+        "end": {
+          "column": 11,
+          "index": 2523,
+          "line": 60
+        },
+        "start": {
+          "column": 11,
+          "index": 2523,
+          "line": 60
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/appbackup  pro/app/src/main/java/com/appbackup/pro/AppBackupApplication.java",
+      "selection": {
+        "end": {
+          "column": 1,
+          "index": 687,
+          "line": 27
+        },
+        "start": {
+          "column": 1,
+          "index": 687,
+          "line": 27
+        }
+      }
+    },
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/appbackup  pro/app/build.gradle.kts",
+      "selection": {
+        "end": {
+          "column": 1,
+          "index": 1406,
+          "line": 46
+        },
+        "start": {
+          "column": 1,
+          "index": 1406,
+          "line": 46
+        }
+      }
+    }
+  ],
+  "selectedFile": "/storage/emulated/0/AndroidIDEProjects/appbackup  pro/app/build.gradle.kts"
+}
