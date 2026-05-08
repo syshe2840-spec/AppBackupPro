@@ -108,8 +108,16 @@ public class RootShell {
      * چک می‌کنه که پوشه‌ای روی سیستم وجود داره
      */
     public static boolean dirExists(String path) {
-        Result result = run("[ -d '" + path + "' ] && echo OK");
-        return result.success && result.stdout.contains("OK");
+    // چک کنیم shell واقعاً root هست
+    Shell shell = Shell.getShell();
+    Log.d(TAG, "Shell isRoot=" + shell.isRoot() + " status=" + shell.getStatus());
+    
+    Result result = run("[ -d \"" + path + "\" ] && echo EXISTS || echo MISSING");
+    Log.d(TAG, "dirExists [" + path + "]: exitCode=" + result.exitCode 
+        + " stdout=[" + result.stdout.trim() + "]"
+        + " stderr=[" + result.stderr.trim() + "]");
+    
+    return result.stdout.contains("EXISTS");
     }
 
     /**
