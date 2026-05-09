@@ -1,5 +1,6 @@
 package com.appbackup.pro.models;
 
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -25,6 +26,8 @@ public class BackupMeta {
     private boolean hasDeviceProtectedData;
     private boolean hasExternalData;
     private boolean hasObb;
+    private boolean hasKeystore;
+    private String[] keystoreFiles;
 
     public BackupMeta() {
     }
@@ -50,6 +53,12 @@ public class BackupMeta {
         json.put("hasDeviceProtectedData", hasDeviceProtectedData);
         json.put("hasExternalData", hasExternalData);
         json.put("hasObb", hasObb);
+        json.put("hasKeystore", hasKeystore);
+        if (keystoreFiles != null) {
+            JSONArray arr = new JSONArray();
+            for (String f : keystoreFiles) arr.put(f);
+            json.put("keystoreFiles", arr);
+        }
         return json;
     }
 
@@ -74,6 +83,17 @@ public class BackupMeta {
         meta.hasDeviceProtectedData = json.optBoolean("hasDeviceProtectedData", false);
         meta.hasExternalData = json.optBoolean("hasExternalData", false);
         meta.hasObb = json.optBoolean("hasObb", false);
+        meta.hasKeystore = json.optBoolean("hasKeystore", false);
+        
+        JSONArray arr = json.optJSONArray("keystoreFiles");
+        if (arr != null) {
+            String[] files = new String[arr.length()];
+            for (int i = 0; i < arr.length(); i++) {
+                files[i] = arr.optString(i);
+            }
+            meta.keystoreFiles = files;
+        }
+        
         return meta;
     }
 
@@ -125,4 +145,10 @@ public class BackupMeta {
 
     public boolean hasObb() { return hasObb; }
     public void setHasObb(boolean hasObb) { this.hasObb = hasObb; }
+
+    public boolean hasKeystore() { return hasKeystore; }
+    public void setHasKeystore(boolean hasKeystore) { this.hasKeystore = hasKeystore; }
+
+    public String[] getKeystoreFiles() { return keystoreFiles; }
+    public void setKeystoreFiles(String[] keystoreFiles) { this.keystoreFiles = keystoreFiles; }
 }
