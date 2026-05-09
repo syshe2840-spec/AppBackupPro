@@ -11,15 +11,7 @@ import com.appbackup.pro.utils.FileUtils;
 import java.io.File;
 
 /**
- * موتور اصلی ریستور - نسخه‌ی نهایی فول قوی
- * Features:
- * - Dry-run mode
- * - Force mode
- * - Pre/Post verification
- * - SHA256 integrity check
- * - Atomic Restore با Snapshot + Rollback
- * - Native libs restore
- * - Runtime permissions restore
+ * موتور ریستور - نسخه‌ی نهایی فول قوی با همه‌ی feature ها
  */
 public class RestoreEngine {
     private static final String TAG = "AppBackupPro_DEBUG";
@@ -32,6 +24,7 @@ public class RestoreEngine {
     private boolean dryRun = false;
     private boolean forceMode = false;
     private boolean skipVerification = false;
+    private RestoreOptions options = new RestoreOptions(RestoreOptions.RestoreMode.FULL);
 
     public interface ProgressCallback {
         void onProgress(String message, int percent);
@@ -60,6 +53,14 @@ public class RestoreEngine {
         return this;
     }
 
+    /**
+     * ⭐ تنظیم گزینه‌های ریستور (Selective Restore)
+     */
+    public RestoreEngine setOptions(RestoreOptions options) {
+        this.options = options != null ? options : new RestoreOptions(RestoreOptions.RestoreMode.FULL);
+        return this;
+    }
+
     private void updateProgress(String message, int percent) {
         Log.d(TAG, "═══ RESTORE [" + percent + "%] " + message);
         if (progressCallback != null) {
@@ -79,172 +80,172 @@ public class RestoreEngine {
         long startTime = System.currentTimeMillis();
         String packageName = meta.getPackageName();
         RestoreSnapshot snapshot = null;
+        int userId = options.getUserId();
 
         Log.d(TAG, "");
         Log.d(TAG, "╔════════════════════════════════════════");
         Log.d(TAG, "║ RESTORE START: " + packageName);
+        Log.d(TAG, "║ Mode: " + options.getDescription());
+        Log.d(TAG, "║ User: " + userId);
         Log.d(TAG, "║ DryRun: " + dryRun);
         Log.d(TAG, "║ Force: " + forceMode);
         Log.d(TAG, "║ SkipVerify: " + skipVerification);
         Log.d(TAG, "╚════════════════════════════════════════");
 
         try {
-            // مرحله ۱: روت
             updateProgress("Checking root access...", 2);
             if (!RootShell.checkRootPermission()) {
                 return BackupResult.failure("Root access denied");
             }
 
-            // ⭐ مرحله ۲: Pre-restore verification
+            // Pre-restore verification
             if (!skipVerification) {
                 updateProgress("Verifying backup integrity...", 4);
                 BackupVerifier.VerifyResult preVerify = BackupVerifier.verifyBackup(backupDir, meta);
-                Log.d(TAG, "Pre-verify: " + preVerify.summary());
                 
                 if (!preVerify.success && !forceMode) {
                     return BackupResult.failure("Backup verification failed:\n" + preVerify.summary());
                 }
                 
-                if (!preVerify.success && forceMode) {
-                    Log.w(TAG, "⚠ Force mode: continuing despite verification errors");
-                }
-                
-                // ⭐ SHA256 hash verification
                 updateProgress("Checking file integrity (SHA256)...", 6);
                 boolean integrityOk = IntegrityChecker.verifyChecksums(backupDir);
                 if (!integrityOk && !forceMode) {
-                    return BackupResult.failure("Backup is corrupted (SHA256 mismatch).\nFiles may have been damaged or modified.");
-                }
-                if (!integrityOk && forceMode) {
-                    Log.w(TAG, "⚠ Force mode: continuing despite integrity errors");
+                    return BackupResult.failure("Backup is corrupted (SHA256 mismatch)");
                 }
             }
 
-            // ⭐ مرحله ۳: Dry-run mode
+            // Dry-run mode
             if (dryRun) {
                 updateProgress("Dry-run analysis...", 50);
                 String report = generateDryRunReport(backupDir, meta);
-                Log.d(TAG, report);
                 BackupResult result = BackupResult.success("DRY RUN COMPLETE\n\n" + report);
                 result.setDurationMs(System.currentTimeMillis() - startTime);
                 return result;
             }
 
-            // ⭐⭐⭐ مرحله ۴: Snapshot قبل از تغییرات (Atomic Restore)
+            // Snapshot
             updateProgress("Creating safety snapshot...", 8);
             snapshot = new RestoreSnapshot(packageName);
             if (!snapshot.create()) {
-                Log.w(TAG, "⚠ Snapshot creation failed - rollback won't be available");
+                Log.w(TAG, "⚠ Snapshot creation failed");
                 snapshot = null;
             }
 
-            // مرحله ۵: نصب APK
-            boolean appInstalled = AppUtils.isAppInstalled(context, packageName);
-            Log.d(TAG, "App installed: " + appInstalled);
-            
-            if (!appInstalled) {
-                updateProgress("App not installed. Installing APK...", 12);
-                if (!meta.hasApk()) {
-                    return BackupResult.failure("App not installed and no APK in backup");
+            // ⭐ نصب APK (اگه گزینه فعاله)
+            if (options.isRestoreApk()) {
+                boolean appInstalled = MultiUserHelper.isAppInstalledForUser(packageName, userId);
+                Log.d(TAG, "App installed for user " + userId + ": " + appInstalled);
+                
+                if (!appInstalled) {
+                    updateProgress("Installing APK...", 12);
+                    if (!meta.hasApk()) {
+                        if (!forceMode) {
+                            return BackupResult.failure("App not installed and no APK in backup");
+                        }
+                    } else {
+                        BackupResult installResult = installApk(backupDir, meta, userId);
+                        if (!installResult.isSuccess() && !forceMode) {
+                            return installResult;
+                        }
+                        Thread.sleep(2000);
+                    }
                 }
-                BackupResult installResult = installApk(backupDir, meta);
-                if (!installResult.isSuccess() && !forceMode) {
-                    return installResult;
-                }
-                Thread.sleep(2000);
             }
 
-            // مرحله ۶: UID/GID check
+            // UID check
             updateProgress("Getting app UID...", 22);
-            int newUid = RootShell.getAppUid(packageName);
+            int newUid = MultiUserHelper.getAppUidForUser(packageName, userId);
             int originalUid = meta.getUid();
             Log.d(TAG, "UID: current=" + newUid + " backup=" + originalUid);
             
             if (newUid <= 0) {
                 if (!forceMode) {
-                    return BackupResult.failure("Cannot get app UID");
+                    return BackupResult.failure("Cannot get app UID for user " + userId);
                 }
                 newUid = originalUid;
             }
 
-            // مرحله ۷: توقف اپ
+            // توقف اپ
             updateProgress("Stopping app...", 26);
+            RootShell.run("am force-stop --user " + userId + " " + packageName + " 2>/dev/null");
             RootShell.run("am force-stop " + packageName);
             Thread.sleep(1000);
 
-            // مرحله ۸: Internal Data
-            if (meta.hasInternalData()) {
+            // ⭐ Internal Data (با selective options)
+            if (meta.hasInternalData() && (options.isRestoreInternalData() 
+                    || options.isRestoreDatabases() 
+                    || options.isRestoreSharedPrefs() 
+                    || options.isRestoreFiles())) {
                 updateProgress("Restoring internal data...", 32);
                 File dataDir = new File(backupDir, "data");
                 if (dataDir.exists()) {
-                    BackupResult r = restoreInternalData(packageName, dataDir, newUid);
+                    BackupResult r = restoreInternalDataSelective(packageName, dataDir, newUid, userId);
                     if (!r.isSuccess() && !forceMode) {
                         return r;
                     }
                 }
             }
 
-            // مرحله ۹: Native Libraries
-            if (meta.hasNativeLibs()) {
+            // Native Libraries
+            if (meta.hasNativeLibs() && options.isRestoreNativeLibs()) {
                 updateProgress("Restoring native libraries...", 42);
-                restoreNativeLibs(packageName, backupDir, newUid);
+                restoreNativeLibs(packageName, backupDir, newUid, userId);
             }
 
-            // مرحله ۱۰: KeyStore
-            if (meta.hasKeystore()) {
+            // KeyStore
+            if (meta.hasKeystore() && options.isRestoreKeystore()) {
                 updateProgress("Restoring keystore keys...", 50);
-                restoreKeystore(backupDir, meta, newUid);
+                restoreKeystore(backupDir, meta, newUid, userId);
             }
 
-            // مرحله ۱۱: DE Data
-            if (meta.hasDeviceProtectedData()) {
+            // DE Data
+            if (meta.hasDeviceProtectedData() && options.isRestoreDeData()) {
                 updateProgress("Restoring device-protected data...", 60);
                 File deDir = new File(backupDir, "data_de");
                 if (deDir.exists()) {
-                    restoreDeData(packageName, deDir, newUid);
+                    restoreDeData(packageName, deDir, newUid, userId);
                 }
             }
 
-            // مرحله ۱۲: External Data
-            if (meta.hasExternalData()) {
+            // External Data
+            if (meta.hasExternalData() && options.isRestoreExternalData()) {
                 updateProgress("Restoring external data...", 70);
                 File extDir = new File(backupDir, "ext_data");
                 if (extDir.exists()) {
-                    restoreExternalData(packageName, extDir);
+                    restoreExternalData(packageName, extDir, userId);
                 }
             }
 
-            // مرحله ۱۳: OBB
-            if (meta.hasObb()) {
+            // OBB
+            if (meta.hasObb() && options.isRestoreObb()) {
                 updateProgress("Restoring OBB files...", 80);
                 File obbDir = new File(backupDir, "obb");
                 if (obbDir.exists()) {
-                    restoreObb(packageName, obbDir);
+                    restoreObb(packageName, obbDir, userId);
                 }
             }
 
-            // مرحله ۱۴: SELinux + Ownership
+            // SELinux + Ownership
             updateProgress("Fixing SELinux and ownership...", 86);
-            fixSelinuxContexts(packageName);
-            fixOwnership(packageName, newUid);
+            fixSelinuxContexts(packageName, userId);
+            fixOwnership(packageName, newUid, userId);
 
-            // مرحله ۱۵: Permissions
-            if (meta.hasPermissions()) {
+            // Permissions
+            if (meta.hasPermissions() && options.isRestorePermissions()) {
                 updateProgress("Restoring permissions...", 90);
                 int restored = PermissionsManager.restorePermissions(packageName, backupDir);
                 Log.d(TAG, "Restored " + restored + "/" + meta.getPermissionsCount() + " permissions");
             }
 
-            // مرحله ۱۶: Post-restore verification
+            // Post-restore verification
             String verifyReport = "";
-            if (!skipVerification) {
+            if (!skipVerification && !options.isPartial()) {
+                // فقط برای FULL restore verify می‌کنیم (partial restore حالت متفاوتی داره)
                 updateProgress("Verifying restore...", 94);
                 BackupVerifier.VerifyResult postVerify = BackupVerifier.verifyRestore(packageName, meta);
                 verifyReport = postVerify.summary();
-                Log.d(TAG, "Post-verify: " + verifyReport);
                 
                 if (!postVerify.success && !forceMode) {
-                    // ⭐ post-verify fail → rollback
                     if (snapshot != null) {
                         Log.w(TAG, "Post-verify failed, rolling back...");
                         snapshot.rollback();
@@ -254,11 +255,10 @@ public class RestoreEngine {
                 }
             }
 
-            // مرحله ۱۷: نهایی
             updateProgress("Finalizing...", 98);
             RootShell.run("am force-stop " + packageName);
 
-            // ⭐⭐⭐ Commit snapshot (موفق)
+            // Commit snapshot
             if (snapshot != null) {
                 snapshot.commit();
             }
@@ -268,10 +268,14 @@ public class RestoreEngine {
             Log.d(TAG, "");
             Log.d(TAG, "╔════════════════════════════════════════");
             Log.d(TAG, "║ RESTORE COMPLETE ✓");
+            Log.d(TAG, "║ Mode: " + options.getDescription());
             Log.d(TAG, "║ Duration: " + (System.currentTimeMillis() - startTime) + "ms");
             Log.d(TAG, "╚════════════════════════════════════════");
 
             String successMsg = "Restore completed successfully";
+            if (options.isPartial()) {
+                successMsg += " (" + options.getDescription() + ")";
+            }
             if (!verifyReport.isEmpty() && !skipVerification) {
                 successMsg += "\n\n" + verifyReport;
             }
@@ -283,10 +287,8 @@ public class RestoreEngine {
         } catch (Exception e) {
             Log.e(TAG, "RESTORE FAILED", e);
             
-            // ⭐⭐⭐ ROLLBACK خودکار از snapshot
             String rollbackMsg = "";
             if (snapshot != null) {
-                Log.d(TAG, "Attempting rollback from snapshot...");
                 if (snapshot.rollback()) {
                     rollbackMsg = "\n\n✓ App restored to previous state (rollback successful)";
                 } else {
@@ -299,8 +301,97 @@ public class RestoreEngine {
     }
 
     /**
-     * گزارش Dry-Run
+     * ⭐ ریستور Internal Data با گزینه‌های انتخابی
      */
+    private BackupResult restoreInternalDataSelective(String packageName, File dataDir, int uid, int userId) {
+        try {
+            String targetPath = MultiUserHelper.getDataPath(packageName, userId);
+            Log.d(TAG, "─── INTERNAL DATA RESTORE ───");
+            Log.d(TAG, "Target: " + targetPath);
+            Log.d(TAG, "Mode: " + options.getMode());
+
+            // اگه partial هست، فقط subdir خاص رو ریستور کن
+            if (options.isInternalDataPartial()) {
+                String subdir = options.getPartialTargetSubdir();
+                File sourceSubdir = new File(dataDir, subdir);
+                
+                if (!sourceSubdir.exists()) {
+                    Log.w(TAG, "Source subdir not in backup: " + subdir);
+                    return BackupResult.success("Skipped: " + subdir + " not in backup");
+                }
+                
+                Log.d(TAG, "Partial restore: " + subdir);
+                
+                // فقط همون پوشه رو پاک کن
+                String targetSubdir = targetPath + "/" + subdir;
+                RootShell.run("rm -rf " + targetSubdir);
+                RootShell.run("mkdir -p " + targetSubdir);
+                
+                String cpCmd = "cp -rfL " + RootShell.escapePath(sourceSubdir.getAbsolutePath() + "/.")
+                        + " " + targetSubdir + "/";
+                RootShell.Result r = RootShell.run(cpCmd);
+                logResult("Partial cp: " + subdir, r);
+                
+                RootShell.run("chown -R " + uid + ":" + uid + " " + targetSubdir);
+                
+                Log.d(TAG, "✓ Partial internal data restored: " + subdir);
+                return BackupResult.success("Restored: " + subdir);
+            }
+            
+            // اگه options.isRestoreInternalData() هست ولی بخش‌ها انتخابی هستن (CUSTOM mode)
+            if (options.getMode() == RestoreOptions.RestoreMode.CUSTOM) {
+                Log.d(TAG, "Custom restore - selective subdirs");
+                
+                // برای هر subdir چک می‌کنیم
+                String[] subdirs = {"databases", "shared_prefs", "files"};
+                boolean[] flags = {
+                    options.isRestoreDatabases(),
+                    options.isRestoreSharedPrefs(),
+                    options.isRestoreFiles()
+                };
+                
+                for (int i = 0; i < subdirs.length; i++) {
+                    if (!flags[i]) continue;
+                    
+                    File sourceSubdir = new File(dataDir, subdirs[i]);
+                    if (!sourceSubdir.exists()) continue;
+                    
+                    String targetSubdir = targetPath + "/" + subdirs[i];
+                    RootShell.run("rm -rf " + targetSubdir);
+                    RootShell.run("mkdir -p " + targetSubdir);
+                    
+                    String cpCmd = "cp -rfL " + RootShell.escapePath(sourceSubdir.getAbsolutePath() + "/.")
+                            + " " + targetSubdir + "/";
+                    RootShell.run(cpCmd);
+                    
+                    Log.d(TAG, "  ✓ Restored: " + subdirs[i]);
+                }
+                
+                RootShell.run("chown -R " + uid + ":" + uid + " " + targetPath);
+                return BackupResult.success("Custom restore complete");
+            }
+            
+            // FULL یا DATA_ONLY: همه چی رو ریستور کن
+            RootShell.run("rm -rf " + targetPath + "/*");
+
+            String cpCmd = "cp -rfL " + RootShell.escapePath(dataDir.getAbsolutePath() + "/.")
+                    + " " + targetPath + "/";
+            RootShell.Result r = RootShell.run(cpCmd);
+            logResult("Internal cp -rfL", r);
+
+            RootShell.Result lsResult = RootShell.run("ls -A " + targetPath);
+            if (lsResult.stdout.trim().isEmpty()) {
+                return BackupResult.failure("Internal data restore failed - no files");
+            }
+
+            RootShell.run("chown -R " + uid + ":" + uid + " " + targetPath);
+            Log.d(TAG, "✓ Internal data restored");
+            return BackupResult.success("Internal data restored");
+        } catch (Exception e) {
+            return BackupResult.failure("Internal restore error: " + e.getMessage());
+        }
+    }
+
     private String generateDryRunReport(File backupDir, BackupMeta meta) {
         StringBuilder sb = new StringBuilder();
         sb.append("📋 DRY-RUN REPORT\n");
@@ -308,39 +399,47 @@ public class RestoreEngine {
         sb.append("Package: ").append(meta.getPackageName()).append("\n");
         sb.append("App: ").append(meta.getAppName()).append("\n");
         sb.append("Version: ").append(meta.getVersionName()).append("\n");
-        sb.append("Backup size: ").append(FileUtils.formatSize(meta.getTotalSize())).append("\n\n");
+        sb.append("Backup size: ").append(FileUtils.formatSize(meta.getTotalSize())).append("\n");
+        sb.append("Mode: ").append(options.getDescription()).append("\n");
+        sb.append("User: ").append(options.getUserId()).append("\n\n");
         
         sb.append("Will perform:\n");
+        sb.append("  📸 Create safety snapshot\n");
         
-        boolean installed = AppUtils.isAppInstalled(context, meta.getPackageName());
-        if (!installed) {
-            sb.append("  📦 Install APK from backup\n");
-            if (meta.hasSplitApks()) sb.append("  📦 Install split APKs\n");
-        } else {
-            sb.append("  ⏭ App already installed (will replace data)\n");
+        if (options.isRestoreApk()) {
+            boolean installed = MultiUserHelper.isAppInstalledForUser(meta.getPackageName(), options.getUserId());
+            if (!installed) {
+                sb.append("  📦 Install APK\n");
+                if (meta.hasSplitApks()) sb.append("  📦 Install split APKs\n");
+            } else {
+                sb.append("  ⏭ App already installed\n");
+            }
         }
         
-        sb.append("  📸 Create safety snapshot (for rollback)\n");
-        if (meta.hasInternalData()) sb.append("  💾 Restore internal data\n");
-        if (meta.hasNativeLibs()) sb.append("  📚 Restore native libraries\n");
-        if (meta.hasKeystore()) sb.append("  🔑 Restore keystore (").append(
-            meta.getKeystoreFiles() != null ? meta.getKeystoreFiles().length : 0
-        ).append(" files)\n");
-        if (meta.hasDeviceProtectedData()) sb.append("  🔒 Restore device-protected data\n");
-        if (meta.hasExternalData()) sb.append("  📁 Restore external data\n");
-        if (meta.hasObb()) sb.append("  🎮 Restore OBB files\n");
-        if (meta.hasPermissions()) sb.append("  ✅ Restore ").append(meta.getPermissionsCount()).append(" permissions\n");
-        sb.append("  🛡 Verify integrity & rollback on failure\n");
+        if (options.isRestoreInternalData() && meta.hasInternalData()) {
+            sb.append("  💾 Restore internal data\n");
+        } else if (options.getMode() == RestoreOptions.RestoreMode.DATABASES_ONLY) {
+            sb.append("  🗄 Restore databases only\n");
+        } else if (options.getMode() == RestoreOptions.RestoreMode.SHARED_PREFS_ONLY) {
+            sb.append("  ⚙️ Restore preferences only\n");
+        } else if (options.getMode() == RestoreOptions.RestoreMode.FILES_ONLY) {
+            sb.append("  📁 Restore files only\n");
+        }
         
+        if (options.isRestoreNativeLibs() && meta.hasNativeLibs()) sb.append("  📚 Restore native libraries\n");
+        if (options.isRestoreKeystore() && meta.hasKeystore()) sb.append("  🔑 Restore keystore\n");
+        if (options.isRestoreDeData() && meta.hasDeviceProtectedData()) sb.append("  🔒 Restore DE data\n");
+        if (options.isRestoreExternalData() && meta.hasExternalData()) sb.append("  📁 Restore external data\n");
+        if (options.isRestoreObb() && meta.hasObb()) sb.append("  🎮 Restore OBB\n");
+        if (options.isRestorePermissions() && meta.hasPermissions()) sb.append("  ✅ Restore permissions\n");
+        
+        sb.append("  🛡 Verify integrity & rollback on failure\n");
         sb.append("\nNo changes were made (dry-run mode).");
         
         return sb.toString();
     }
 
-    /**
-     * نصب APK با کپی به /data/local/tmp/
-     */
-    private BackupResult installApk(File backupDir, BackupMeta meta) {
+    private BackupResult installApk(File backupDir, BackupMeta meta, int userId) {
         try {
             File baseApk = new File(backupDir, "base.apk");
             if (!baseApk.exists()) {
@@ -356,11 +455,10 @@ public class RestoreEngine {
 
             String tmpBaseApk = TMP_DIR + "/base.apk";
             RootShell.Result cpBase = RootShell.run("cp -f " 
-                + RootShell.escapePath(baseApk.getAbsolutePath()) 
-                + " " + tmpBaseApk);
+                + RootShell.escapePath(baseApk.getAbsolutePath()) + " " + tmpBaseApk);
             
             if (!cpBase.success) {
-                return BackupResult.failure("Cannot copy APK to tmp: " + cpBase.allOutput());
+                return BackupResult.failure("Cannot copy APK to tmp");
             }
 
             RootShell.run("chmod 644 " + tmpBaseApk);
@@ -372,8 +470,7 @@ public class RestoreEngine {
                 if (splits != null) {
                     for (File split : splits) {
                         String tmpSplit = TMP_DIR + "/" + split.getName();
-                        RootShell.run("cp -f " 
-                            + RootShell.escapePath(split.getAbsolutePath()) 
+                        RootShell.run("cp -f " + RootShell.escapePath(split.getAbsolutePath()) 
                             + " " + RootShell.escapePath(tmpSplit));
                         RootShell.run("chmod 644 " + RootShell.escapePath(tmpSplit));
                         RootShell.run("chown shell:shell " + RootShell.escapePath(tmpSplit));
@@ -384,9 +481,9 @@ public class RestoreEngine {
 
             BackupResult result;
             if (!hasSplits) {
-                result = installSingleApkFromTmp(tmpBaseApk);
+                result = installSingleApkFromTmp(tmpBaseApk, userId);
             } else {
-                result = installSplitApksFromTmp(splitsDir);
+                result = installSplitApksFromTmp(splitsDir, userId);
             }
 
             RootShell.run("rm -rf " + TMP_DIR);
@@ -398,9 +495,10 @@ public class RestoreEngine {
         }
     }
 
-    private BackupResult installSingleApkFromTmp(String tmpApkPath) {
+    private BackupResult installSingleApkFromTmp(String tmpApkPath, int userId) {
         try {
-            String cmd = "pm install -r " + tmpApkPath;
+            String userArg = (userId != 0) ? " --user " + userId : "";
+            String cmd = "pm install -r" + userArg + " " + tmpApkPath;
             RootShell.Result r = RootShell.run(cmd);
             logResult("pm install", r);
             
@@ -408,9 +506,8 @@ public class RestoreEngine {
                 return BackupResult.success("APK installed");
             }
             
-            String cmd2 = "cmd package install -r " + tmpApkPath;
+            String cmd2 = "cmd package install -r" + userArg + " " + tmpApkPath;
             RootShell.Result r2 = RootShell.run(cmd2);
-            logResult("cmd package install", r2);
             
             if (r2.success && (r2.stdout.contains("Success") || r2.stderr.contains("Success"))) {
                 return BackupResult.success("APK installed");
@@ -422,7 +519,7 @@ public class RestoreEngine {
         }
     }
 
-    private BackupResult installSplitApksFromTmp(File splitsDir) {
+    private BackupResult installSplitApksFromTmp(File splitsDir, int userId) {
         try {
             File tmpBase = new File(TMP_DIR + "/base.apk");
             long totalSize = tmpBase.length();
@@ -432,7 +529,8 @@ public class RestoreEngine {
                 for (File s : splits) totalSize += s.length();
             }
 
-            String createCmd = "pm install-create -r -S " + totalSize;
+            String userArg = (userId != 0) ? " --user " + userId : "";
+            String createCmd = "pm install-create -r" + userArg + " -S " + totalSize;
             RootShell.Result createResult = RootShell.run(createCmd);
             if (!createResult.success) {
                 return BackupResult.failure("Cannot create install session");
@@ -480,32 +578,7 @@ public class RestoreEngine {
         }
     }
 
-    private BackupResult restoreInternalData(String packageName, File dataDir, int uid) {
-        try {
-            String targetPath = "/data/data/" + packageName;
-            Log.d(TAG, "─── INTERNAL DATA RESTORE ───");
-
-            RootShell.run("rm -rf " + targetPath + "/*");
-
-            String cpCmd = "cp -rfL " + RootShell.escapePath(dataDir.getAbsolutePath() + "/.")
-                    + " " + targetPath + "/";
-            RootShell.Result r = RootShell.run(cpCmd);
-            logResult("Internal cp -rfL", r);
-
-            RootShell.Result lsResult = RootShell.run("ls -A " + targetPath);
-            if (lsResult.stdout.trim().isEmpty()) {
-                return BackupResult.failure("Internal data restore failed - no files");
-            }
-
-            RootShell.run("chown -R " + uid + ":" + uid + " " + targetPath);
-            Log.d(TAG, "✓ Internal data restored");
-            return BackupResult.success("Internal data restored");
-        } catch (Exception e) {
-            return BackupResult.failure("Internal restore error: " + e.getMessage());
-        }
-    }
-
-    private void restoreNativeLibs(String packageName, File backupDir, int uid) {
+    private void restoreNativeLibs(String packageName, File backupDir, int uid, int userId) {
         try {
             File libsDir = new File(backupDir, "native_libs");
             if (!libsDir.exists() || libsDir.listFiles() == null || libsDir.listFiles().length == 0) {
@@ -514,11 +587,10 @@ public class RestoreEngine {
             
             Log.d(TAG, "─── NATIVE LIBS RESTORE ───");
             
-            String targetLibPath = "/data/data/" + packageName + "/lib";
+            String targetLibPath = MultiUserHelper.getDataPath(packageName, userId) + "/lib";
             
             RootShell.Result statR = RootShell.run("[ -L " + targetLibPath + " ] && echo SYMLINK || echo DIR");
             if (statR.stdout.contains("SYMLINK")) {
-                Log.d(TAG, "Native libs path is symlink, skipping");
                 return;
             }
             
@@ -528,33 +600,27 @@ public class RestoreEngine {
             
             String cpCmd = "cp -rfL " + RootShell.escapePath(libsDir.getAbsolutePath() + "/.")
                     + " " + targetLibPath + "/";
-            RootShell.Result r = RootShell.run(cpCmd);
-            logResult("Native libs cp", r);
-            
+            RootShell.run(cpCmd);
             RootShell.run("chown -R " + uid + ":" + uid + " " + targetLibPath);
             RootShell.run("chmod -R 755 " + targetLibPath);
-            
-            Log.d(TAG, "✓ Native libs restored");
         } catch (Exception e) {
             Log.e(TAG, "Native libs restore error", e);
         }
     }
 
-    private void restoreKeystore(File backupDir, BackupMeta meta, int newUid) {
+    private void restoreKeystore(File backupDir, BackupMeta meta, int newUid, int userId) {
         try {
             File keystoreDir = new File(backupDir, "keystore");
             if (!keystoreDir.exists() || !keystoreDir.isDirectory()) return;
             
-            Log.d(TAG, "");
-            Log.d(TAG, "─── KEYSTORE RESTORE ───");
-            Log.d(TAG, "Old UID: " + meta.getUid() + " New UID: " + newUid);
+            Log.d(TAG, "─── KEYSTORE RESTORE for user " + userId + " ───");
             
             File[] ksFiles = keystoreDir.listFiles();
             if (ksFiles == null || ksFiles.length == 0) return;
             
             int oldUid = meta.getUid();
             
-            String keystoreTarget = "/data/misc/keystore/user_0";
+            String keystoreTarget = "/data/misc/keystore/user_" + userId;
             if (!RootShell.dirExists(keystoreTarget)) {
                 keystoreTarget = "/data/misc/keystore";
             }
@@ -570,9 +636,9 @@ public class RestoreEngine {
                 if (fileName.startsWith("_shared_")) {
                     String realName = fileName.substring("_shared_".length());
                     String destPath = "/data/misc/keystore/" + realName;
-                    String cpCmd = "cp -f " + RootShell.escapePath(ksFile.getAbsolutePath())
-                            + " " + RootShell.escapePath(destPath);
-                    RootShell.Result cpR = RootShell.run(cpCmd);
+                    RootShell.Result cpR = RootShell.run("cp -f " 
+                        + RootShell.escapePath(ksFile.getAbsolutePath())
+                        + " " + RootShell.escapePath(destPath));
                     if (cpR.success) {
                         RootShell.run("chmod 600 " + RootShell.escapePath(destPath));
                         RootShell.run("chown keystore:keystore " + RootShell.escapePath(destPath) + " 2>/dev/null");
@@ -585,13 +651,12 @@ public class RestoreEngine {
                 String newFileName = fileName;
                 if (oldUid > 0 && newUid != oldUid && fileName.startsWith(oldUid + "_")) {
                     newFileName = newUid + fileName.substring(String.valueOf(oldUid).length());
-                    Log.d(TAG, "Remap: " + fileName + " → " + newFileName);
                 }
                 
                 String destPath = keystoreTarget + "/" + newFileName;
-                String cpCmd = "cp -f " + RootShell.escapePath(ksFile.getAbsolutePath())
-                        + " " + RootShell.escapePath(destPath);
-                RootShell.Result cpR = RootShell.run(cpCmd);
+                RootShell.Result cpR = RootShell.run("cp -f " 
+                    + RootShell.escapePath(ksFile.getAbsolutePath())
+                    + " " + RootShell.escapePath(destPath));
                 
                 if (cpR.success) {
                     RootShell.run("chmod 600 " + RootShell.escapePath(destPath));
@@ -612,9 +677,9 @@ public class RestoreEngine {
         }
     }
 
-    private void restoreDeData(String packageName, File deDir, int uid) {
+    private void restoreDeData(String packageName, File deDir, int uid, int userId) {
         try {
-            String targetPath = "/data/user_de/0/" + packageName;
+            String targetPath = MultiUserHelper.getDeDataPath(packageName, userId);
             Log.d(TAG, "─── DE DATA RESTORE ───");
             
             if (!RootShell.dirExists(targetPath)) {
@@ -632,9 +697,11 @@ public class RestoreEngine {
         }
     }
 
-    private void restoreExternalData(String packageName, File extDir) {
+    private void restoreExternalData(String packageName, File extDir, int userId) {
         try {
-            String targetPath = "/sdcard/Android/data/" + packageName;
+            String targetPath = (userId == 0) 
+                ? "/sdcard/Android/data/" + packageName
+                : "/storage/emulated/" + userId + "/Android/data/" + packageName;
             Log.d(TAG, "─── EXTERNAL DATA RESTORE ───");
             
             RootShell.run("mkdir -p " + targetPath);
@@ -648,9 +715,11 @@ public class RestoreEngine {
         }
     }
 
-    private void restoreObb(String packageName, File obbDir) {
+    private void restoreObb(String packageName, File obbDir, int userId) {
         try {
-            String targetPath = "/sdcard/Android/obb/" + packageName;
+            String targetPath = (userId == 0) 
+                ? "/sdcard/Android/obb/" + packageName
+                : "/storage/emulated/" + userId + "/Android/obb/" + packageName;
             Log.d(TAG, "─── OBB RESTORE ───");
             
             RootShell.run("mkdir -p " + targetPath);
@@ -664,31 +733,29 @@ public class RestoreEngine {
         }
     }
 
-    private void fixSelinuxContexts(String packageName) {
+    private void fixSelinuxContexts(String packageName, int userId) {
         Log.d(TAG, "─── SELINUX RESTORE ───");
         
-        RootShell.run("restorecon -R /data/data/" + packageName);
+        String dataPath = MultiUserHelper.getDataPath(packageName, userId);
+        RootShell.run("restorecon -R " + dataPath);
 
-        if (RootShell.dirExists("/data/user_de/0/" + packageName)) {
-            RootShell.run("restorecon -R /data/user_de/0/" + packageName);
-        }
-
-        if (RootShell.dirExists("/sdcard/Android/data/" + packageName)) {
-            RootShell.run("restorecon -R /sdcard/Android/data/" + packageName);
+        String dePath = MultiUserHelper.getDeDataPath(packageName, userId);
+        if (RootShell.dirExists(dePath)) {
+            RootShell.run("restorecon -R " + dePath);
         }
         
         RootShell.run("restorecon -R /data/misc/keystore 2>/dev/null");
     }
 
-    private void fixOwnership(String packageName, int uid) {
+    private void fixOwnership(String packageName, int uid, int userId) {
         Log.d(TAG, "─── OWNERSHIP FIX ───");
         
-        RootShell.run("chown -R " + uid + ":" + uid + " /data/data/" + packageName);
+        String dataPath = MultiUserHelper.getDataPath(packageName, userId);
+        RootShell.run("chown -R " + uid + ":" + uid + " " + dataPath);
         
-        if (RootShell.dirExists("/data/user_de/0/" + packageName)) {
-            RootShell.run("chown -R " + uid + ":" + uid + " /data/user_de/0/" + packageName);
+        String dePath = MultiUserHelper.getDeDataPath(packageName, userId);
+        if (RootShell.dirExists(dePath)) {
+            RootShell.run("chown -R " + uid + ":" + uid + " " + dePath);
         }
-        
-        Log.d(TAG, "✓ Ownership fixed");
     }
-                }
+                                      }
