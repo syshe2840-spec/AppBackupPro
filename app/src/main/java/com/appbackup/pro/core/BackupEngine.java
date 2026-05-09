@@ -248,11 +248,17 @@ public class BackupEngine {
             RootShell.run("chmod -R 755 " + RootShell.escapePath(backupDir.getAbsolutePath()));
 
             // مرحله ۱۸: metadata
-            updateProgress("Writing metadata...", 97);
+            // مرحله ۱۸: metadata
+            updateProgress("Writing metadata...", 96);
             File metaFile = new File(backupDir, "metadata.json");
             FileUtils.writeString(metaFile, meta.toJson().toString(2));
+            
+            // ⭐ مرحله ۱۹: SHA256 Checksums (جدید!)
+            updateProgress("Generating checksums...", 98);
+            int checksumsCount = IntegrityChecker.generateChecksums(backupDir);
+            Log.d(TAG, "Generated " + checksumsCount + " checksums");
 
-            // ⭐⭐⭐ مرحله ۱۹: UNFREEZE اپ (مهم! اپ رو برگردون به حالت عادی)
+            // مرحله ۲۰: UNFREEZE اپ
             updateProgress("Unfreezing app...", 99);
             if (appWasFrozen) {
                 AppFreezer.unfreeze(packageName);
