@@ -14,10 +14,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
-/**
- * موتور اصلی بکاپ - قلب اپ - نسخه‌ی فول قوی قوی
- * بکاپ کامل: APK + Splits + Internal + DE + External + OBB + Keystore + NativeLibs + Permissions
- */
 public class BackupEngine {
     private static final String TAG = "AppBackupPro_DEBUG";
 
@@ -55,6 +51,7 @@ public class BackupEngine {
         long startTime = System.currentTimeMillis();
         String packageName = appInfo.getPackageName();
         File backupDir = null;
+        boolean appWasFrozen = false;
 
         Log.d(TAG, "");
         Log.d(TAG, "╔════════════════════════════════════════");
@@ -68,7 +65,6 @@ public class BackupEngine {
             if (!RootShell.checkRootPermission()) {
                 return BackupResult.failure("Root access denied");
             }
-            Log.d(TAG, "✓ Root OK");
 
             // مرحله ۲: بررسی اپ
             updateProgress("Checking app...", 4);
@@ -84,14 +80,19 @@ public class BackupEngine {
             if (!FileUtils.ensureDir(backupDir)) {
                 return BackupResult.failure("Cannot create backup folder");
             }
-            Log.d(TAG, "Backup dir: " + backupDir.getAbsolutePath());
 
             // مرحله ۴: اطلاعات اپ
             updateProgress("Getting app info...", 8);
             int uid = RootShell.getAppUid(packageName);
             int gid = getAppGid(packageName);
             String selinuxContext = RootShell.getSelinuxContext(dataPath);
-            Log.d(TAG, "UID=" + uid + " GID=" + gid + " SELinux=" + selinuxContext);
+            
+            // ⭐ گرفتن sharedUserId و همه‌ی UID‌های مربوطه
+            List<String> sharedPackages = getSharedUserPackages(packageName);
+            Log.d(TAG, "UID=" + uid + " GID=" + gid);
+            if (!sharedPackages.isEmpty()) {
+                Log.d(TAG, "Shared user packages: " + sharedPackages);
+            }
 
             BackupMeta meta = new BackupMeta();
             meta.setBackupId(UUID.randomUUID().toString());
@@ -106,13 +107,23 @@ public class BackupEngine {
             meta.setSelinuxContext(selinuxContext);
             meta.setAndroidVersionAtBackup(Build.VERSION.SDK_INT);
 
-            // مرحله ۵: توقف اپ
-            updateProgress("Stopping app...", 10);
-            RootShell.run("am force-stop " + packageName);
-            Thread.sleep(1000);  // 1 ثانیه برای اطمینان از بسته شدن کامل
+            // ⭐⭐⭐ مرحله ۵: FREEZE اپ (به جای فقط force-stop)
+            updateProgress("Freezing app for safe backup...", 10);
+            appWasFrozen = AppFreezer.freeze(packageName);
+            if (!appWasFrozen) {
+                Log.w(TAG, "⚠ Could not freeze app, continuing anyway");
+                // ادامه میدیم ولی هشدار می‌دیم
+                RootShell.run("am force-stop " + packageName);
+                Thread.sleep(1000);
+            }
 
-            // مرحله ۶: APK
-            updateProgress("Backing up APK...", 14);
+            // ⭐⭐⭐ مرحله ۶: Database Checkpoint (مهم!)
+            updateProgress("Checkpointing databases...", 12);
+            int checkpointed = DatabaseHelper.checkpointAllDatabases(packageName);
+            Log.d(TAG, "Checkpointed " + checkpointed + " databases");
+
+            // مرحله ۷: APK
+            updateProgress("Backing up APK...", 16);
             if (appInfo.getApkPath() != null && !appInfo.getApkPath().isEmpty()) {
                 File apkDest = new File(backupDir, "base.apk");
                 String apkCmd = "cp " + RootShell.escapePath(appInfo.getApkPath())
@@ -121,12 +132,11 @@ public class BackupEngine {
                 logResult("APK copy", apkR);
                 if (apkR.success && apkDest.exists() && apkDest.length() > 0) {
                     meta.setHasApk(true);
-                    Log.d(TAG, "✓ APK: " + apkDest.length() + " bytes");
                 }
             }
 
-            // مرحله ۷: Splits
-            updateProgress("Backing up split APKs...", 20);
+            // مرحله ۸: Splits
+            updateProgress("Backing up split APKs...", 22);
             if (appInfo.hasSplits()) {
                 File splitsDir = new File(backupDir, "splits");
                 FileUtils.ensureDir(splitsDir);
@@ -140,19 +150,17 @@ public class BackupEngine {
                     if (!r.success || !dest.exists()) allOk = false;
                 }
                 meta.setHasSplitApks(allOk);
-                if (allOk) Log.d(TAG, "✓ Splits backed up");
             }
 
-            // مرحله ۸: ⭐ Native Libraries (جدید)
-            updateProgress("Backing up native libraries...", 25);
+            // مرحله ۹: Native Libraries
+            updateProgress("Backing up native libraries...", 26);
             backupNativeLibs(packageName, backupDir, meta);
 
-            // مرحله ۹: Internal Data ⭐
-            updateProgress("Backing up internal data...", 32);
+            // مرحله ۱۰: Internal Data ⭐
+            updateProgress("Backing up internal data...", 34);
             File dataDir = new File(backupDir, "data");
             FileUtils.ensureDir(dataDir);
             
-            Log.d(TAG, "─── INTERNAL DATA BACKUP ───");
             String cpCmd = "cp -rfL " + dataPath + "/. " + RootShell.escapePath(dataDir.getAbsolutePath() + "/");
             RootShell.Result r = RootShell.run(cpCmd);
             logResult("Internal cp -rfL", r);
@@ -167,7 +175,7 @@ public class BackupEngine {
                 throw new Exception("Internal data backup failed - no files copied");
             }
 
-            // مرحله ۱۰: DE Data
+            // مرحله ۱۱: DE Data
             updateProgress("Backing up device-protected data...", 48);
             String dePath = "/data/user_de/0/" + packageName;
             if (RootShell.dirExists(dePath)) {
@@ -178,66 +186,77 @@ public class BackupEngine {
                 File[] deFiles = deDir.listFiles();
                 if (deFiles != null && deFiles.length > 0) {
                     meta.setHasDeviceProtectedData(true);
-                    Log.d(TAG, "✓ DE data: " + deFiles.length + " items");
                 }
             }
 
-            // مرحله ۱۱: External Data
-            updateProgress("Backing up external data...", 60);
+            // مرحله ۱۲: External Data
+            updateProgress("Backing up external data...", 58);
             String extPath = "/sdcard/Android/data/" + packageName;
             if (RootShell.dirExists(extPath)) {
                 File extDir = new File(backupDir, "ext_data");
                 FileUtils.ensureDir(extDir);
                 String extCmd = "cp -rfL " + extPath + "/. " + RootShell.escapePath(extDir.getAbsolutePath() + "/");
-                RootShell.Result extR = RootShell.run(extCmd);
+                RootShell.run(extCmd);
                 File[] extFiles = extDir.listFiles();
                 if (extFiles != null && extFiles.length > 0) {
                     meta.setHasExternalData(true);
-                    Log.d(TAG, "✓ Ext: " + extFiles.length + " items");
                 }
             }
 
-            // مرحله ۱۲: OBB
-            updateProgress("Backing up OBB files...", 72);
+            // مرحله ۱۳: OBB
+            updateProgress("Backing up OBB files...", 68);
             String obbPath = "/sdcard/Android/obb/" + packageName;
             if (RootShell.dirExists(obbPath)) {
                 File obbDir = new File(backupDir, "obb");
                 FileUtils.ensureDir(obbDir);
                 String obbCmd = "cp -rfL " + obbPath + "/. " + RootShell.escapePath(obbDir.getAbsolutePath() + "/");
-                RootShell.Result obbR = RootShell.run(obbCmd);
+                RootShell.run(obbCmd);
                 File[] obbFiles = obbDir.listFiles();
                 if (obbFiles != null && obbFiles.length > 0) {
                     meta.setHasObb(true);
-                    Log.d(TAG, "✓ OBB: " + obbFiles.length + " items");
                 }
             }
 
-            // مرحله ۱۳: KeyStore
-            updateProgress("Backing up keystore keys...", 80);
+            // مرحله ۱۴: KeyStore
+            updateProgress("Backing up keystore keys...", 76);
             backupKeystore(backupDir, meta, uid);
+            
+            // ⭐ همینطور KeyStore برای shared packages
+            for (String sharedPkg : sharedPackages) {
+                int sharedUid = RootShell.getAppUid(sharedPkg);
+                if (sharedUid > 0 && sharedUid != uid) {
+                    Log.d(TAG, "Backing up keystore for shared package: " + sharedPkg);
+                    backupKeystore(backupDir, meta, sharedUid);
+                }
+            }
 
-            // مرحله ۱۴: ⭐ Runtime Permissions (جدید)
-            updateProgress("Backing up permissions...", 86);
+            // مرحله ۱۵: Permissions
+            updateProgress("Backing up permissions...", 82);
             int permsCount = PermissionsManager.backupPermissions(packageName, backupDir);
             if (permsCount > 0) {
                 meta.setHasPermissions(true);
                 meta.setPermissionsCount(permsCount);
             }
 
-            // مرحله ۱۵: محاسبه‌ی سایز
-            updateProgress("Calculating size...", 92);
+            // مرحله ۱۶: محاسبه‌ی سایز
+            updateProgress("Calculating size...", 90);
             long totalSize = FileUtils.getFolderSize(backupDir);
             meta.setTotalSize(totalSize);
-            Log.d(TAG, "Total: " + FileUtils.formatSize(totalSize));
 
-            // مرحله ۱۶: permissions
-            updateProgress("Fixing permissions...", 95);
+            // مرحله ۱۷: permissions پوشه
+            updateProgress("Fixing permissions...", 94);
             RootShell.run("chmod -R 755 " + RootShell.escapePath(backupDir.getAbsolutePath()));
 
-            // مرحله ۱۷: metadata
-            updateProgress("Writing metadata...", 98);
+            // مرحله ۱۸: metadata
+            updateProgress("Writing metadata...", 97);
             File metaFile = new File(backupDir, "metadata.json");
             FileUtils.writeString(metaFile, meta.toJson().toString(2));
+
+            // ⭐⭐⭐ مرحله ۱۹: UNFREEZE اپ (مهم! اپ رو برگردون به حالت عادی)
+            updateProgress("Unfreezing app...", 99);
+            if (appWasFrozen) {
+                AppFreezer.unfreeze(packageName);
+            }
 
             updateProgress("Backup complete!", 100);
             
@@ -246,16 +265,6 @@ public class BackupEngine {
             Log.d(TAG, "║ BACKUP COMPLETE ✓");
             Log.d(TAG, "║ Duration: " + (System.currentTimeMillis() - startTime) + "ms");
             Log.d(TAG, "║ Size: " + FileUtils.formatSize(totalSize));
-            Log.d(TAG, "║ Components:");
-            Log.d(TAG, "║   APK: " + meta.hasApk());
-            Log.d(TAG, "║   Splits: " + meta.hasSplitApks());
-            Log.d(TAG, "║   Internal: " + meta.hasInternalData());
-            Log.d(TAG, "║   DE: " + meta.hasDeviceProtectedData());
-            Log.d(TAG, "║   External: " + meta.hasExternalData());
-            Log.d(TAG, "║   OBB: " + meta.hasObb());
-            Log.d(TAG, "║   Keystore: " + meta.hasKeystore());
-            Log.d(TAG, "║   NativeLibs: " + meta.hasNativeLibs());
-            Log.d(TAG, "║   Permissions: " + meta.hasPermissions() + " (" + meta.getPermissionsCount() + ")");
             Log.d(TAG, "╚════════════════════════════════════════");
 
             BackupResult result = BackupResult.success(
@@ -267,6 +276,13 @@ public class BackupEngine {
 
         } catch (Exception e) {
             Log.e(TAG, "BACKUP FAILED", e);
+            
+            // ⭐ مهم: اگه اپ freeze شده، unfreezeش کن قبل از خروج
+            if (appWasFrozen) {
+                Log.d(TAG, "Unfreezing after error...");
+                AppFreezer.unfreeze(packageName);
+            }
+            
             if (backupDir != null && backupDir.exists()) {
                 FileUtils.deleteRecursive(backupDir);
             }
@@ -275,13 +291,64 @@ public class BackupEngine {
     }
 
     /**
-     * ⭐ بکاپ Native Libraries
+     * ⭐ پیدا کردن همه‌ی package‌هایی که sharedUserId با اپ دارن
      */
+    private List<String> getSharedUserPackages(String packageName) {
+        List<String> result = new ArrayList<>();
+        try {
+            // گرفتن sharedUserId اپ
+            RootShell.Result r1 = RootShell.run(
+                "dumpsys package " + packageName + " | grep -i 'sharedUser=' | head -1");
+            
+            if (!r1.success || r1.stdout.trim().isEmpty()) {
+                return result;
+            }
+            
+            // فرمت: sharedUser=SharedUserSetting{xxx com.example.shared/10042}
+            String line = r1.stdout.trim();
+            int eq = line.indexOf('=');
+            if (eq < 0) return result;
+            
+            String sharedInfo = line.substring(eq + 1);
+            // استخراج اسم shared user
+            int braceStart = sharedInfo.indexOf('{');
+            int braceEnd = sharedInfo.lastIndexOf('}');
+            if (braceStart < 0 || braceEnd < 0) return result;
+            
+            String inner = sharedInfo.substring(braceStart + 1, braceEnd).trim();
+            // فرمت: xxx com.example.shared/10042
+            String[] parts = inner.split("\\s+");
+            if (parts.length < 2) return result;
+            
+            String sharedUserName = parts[1];
+            int slashIdx = sharedUserName.indexOf('/');
+            if (slashIdx > 0) sharedUserName = sharedUserName.substring(0, slashIdx);
+            
+            Log.d(TAG, "Shared user name: " + sharedUserName);
+            
+            // پیدا کردن همه‌ی package‌هایی که این sharedUserName رو دارن
+            RootShell.Result r2 = RootShell.run(
+                "pm list packages | while read line; do " +
+                "pkg=$(echo $line | sed 's/package://'); " +
+                "if dumpsys package $pkg 2>/dev/null | grep -q 'sharedUser=.*" + sharedUserName + "'; then " +
+                "echo $pkg; fi; done 2>/dev/null | head -10");
+            
+            if (r2.success && !r2.stdout.trim().isEmpty()) {
+                for (String pkg : r2.stdout.trim().split("\n")) {
+                    pkg = pkg.trim();
+                    if (!pkg.isEmpty() && !pkg.equals(packageName)) {
+                        result.add(pkg);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Cannot get shared packages: " + e.getMessage());
+        }
+        return result;
+    }
+
     private void backupNativeLibs(String packageName, File backupDir, BackupMeta meta) {
         try {
-            Log.d(TAG, "─── NATIVE LIBS BACKUP ───");
-            
-            // مسیرهای ممکن برای native libs
             String[] libPaths = {
                 "/data/app/" + packageName + "*/lib",
                 "/data/data/" + packageName + "/lib"
@@ -293,58 +360,45 @@ public class BackupEngine {
                 
                 if (findR.success && !findR.stdout.trim().isEmpty()) {
                     String libPath = findR.stdout.trim();
-                    Log.d(TAG, "Found native libs at: " + libPath);
-                    
                     File libsDir = new File(backupDir, "native_libs");
                     FileUtils.ensureDir(libsDir);
                     
                     String cpCmd = "cp -rfL " + libPath + "/. " + RootShell.escapePath(libsDir.getAbsolutePath() + "/");
-                    RootShell.Result cpR = RootShell.run(cpCmd);
-                    logResult("Native libs cp", cpR);
+                    RootShell.run(cpCmd);
                     
                     File[] libs = libsDir.listFiles();
                     if (libs != null && libs.length > 0) {
                         meta.setHasNativeLibs(true);
-                        Log.d(TAG, "✓ Native libs: " + libs.length + " items");
                         return;
                     }
                 }
             }
-            
-            Log.d(TAG, "No native libs found");
         } catch (Exception e) {
             Log.w(TAG, "Native libs backup error: " + e.getMessage());
         }
     }
 
-    /**
-     * گرفتن GID اپ
-     */
     private int getAppGid(String packageName) {
         try {
             RootShell.Result r = RootShell.run("stat -c '%g' /data/data/" + packageName);
             if (r.success) {
                 return Integer.parseInt(r.stdout.trim());
             }
-        } catch (Exception e) {
-            Log.w(TAG, "Cannot get GID: " + e.getMessage());
-        }
+        } catch (Exception e) {}
         return -1;
     }
 
-    /**
-     * بکاپ KeyStore برای حل مشکل AEADBadTagException
-     */
     private void backupKeystore(File backupDir, BackupMeta meta, int uid) {
         try {
             File keystoreDir = new File(backupDir, "keystore");
             FileUtils.ensureDir(keystoreDir);
             
-            Log.d(TAG, "");
-            Log.d(TAG, "─── KEYSTORE BACKUP ───");
-            Log.d(TAG, "App UID: " + uid);
+            Log.d(TAG, "─── KEYSTORE BACKUP for UID " + uid + " ───");
             
             List<String> foundFiles = new ArrayList<>();
+            if (meta.getKeystoreFiles() != null) {
+                for (String f : meta.getKeystoreFiles()) foundFiles.add(f);
+            }
             
             String[] keystorePaths = {
                 "/data/misc/keystore/user_0",
@@ -358,21 +412,20 @@ public class BackupEngine {
                 RootShell.Result findR = RootShell.run(findCmd);
                 
                 if (findR.success && !findR.stdout.trim().isEmpty()) {
-                    String[] files = findR.stdout.trim().split("\n");
-                    for (String filePath : files) {
+                    for (String filePath : findR.stdout.trim().split("\n")) {
                         filePath = filePath.trim();
                         if (filePath.isEmpty()) continue;
                         
                         String fileName = filePath.substring(filePath.lastIndexOf('/') + 1);
-                        File destFile = new File(keystoreDir, fileName);
+                        if (foundFiles.contains(fileName)) continue;  // duplicate
                         
+                        File destFile = new File(keystoreDir, fileName);
                         String cpCmd = "cp -f " + RootShell.escapePath(filePath)
                                 + " " + RootShell.escapePath(destFile.getAbsolutePath());
                         RootShell.Result cpR = RootShell.run(cpCmd);
                         
                         if (cpR.success && destFile.exists() && destFile.length() > 0) {
                             foundFiles.add(fileName);
-                            Log.d(TAG, "  ✓ " + fileName);
                         }
                     }
                 }
@@ -385,6 +438,8 @@ public class BackupEngine {
             for (String sqlPath : sqliteFiles) {
                 if (RootShell.exists(sqlPath)) {
                     String name = "_shared_" + sqlPath.substring(sqlPath.lastIndexOf('/') + 1);
+                    if (foundFiles.contains(name)) continue;
+                    
                     File dest = new File(keystoreDir, name);
                     RootShell.Result r = RootShell.run("cp -f " + sqlPath + " " 
                         + RootShell.escapePath(dest.getAbsolutePath()));
@@ -397,12 +452,10 @@ public class BackupEngine {
             if (!foundFiles.isEmpty()) {
                 meta.setHasKeystore(true);
                 meta.setKeystoreFiles(foundFiles.toArray(new String[0]));
-                Log.d(TAG, "✓ KeyStore: " + foundFiles.size() + " files");
-            } else {
-                Log.d(TAG, "No KeyStore files for UID " + uid);
+                Log.d(TAG, "✓ KeyStore total: " + foundFiles.size() + " files");
             }
         } catch (Exception e) {
             Log.w(TAG, "KeyStore backup error: " + e.getMessage());
         }
     }
-    }
+}
