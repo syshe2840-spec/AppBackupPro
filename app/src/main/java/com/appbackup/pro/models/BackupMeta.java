@@ -16,6 +16,7 @@ public class BackupMeta {
     private long versionCode;
     private long createdAt;
     private int uid;
+    private int gid;
     private String selinuxContext;
     private long totalSize;
     
@@ -27,13 +28,17 @@ public class BackupMeta {
     private boolean hasExternalData;
     private boolean hasObb;
     private boolean hasKeystore;
+    private boolean hasNativeLibs;
+    private boolean hasPermissions;
     private String[] keystoreFiles;
+    private int permissionsCount;
+    private int androidVersionAtBackup;
 
     public BackupMeta() {
     }
 
     /**
-     * تبدیل به JSON برای ذخیره توی فایل
+     * تبدیل به JSON
      */
     public JSONObject toJson() throws JSONException {
         JSONObject json = new JSONObject();
@@ -45,6 +50,7 @@ public class BackupMeta {
         json.put("versionCode", versionCode);
         json.put("createdAt", createdAt);
         json.put("uid", uid);
+        json.put("gid", gid);
         json.put("selinuxContext", selinuxContext);
         json.put("totalSize", totalSize);
         json.put("hasApk", hasApk);
@@ -54,6 +60,10 @@ public class BackupMeta {
         json.put("hasExternalData", hasExternalData);
         json.put("hasObb", hasObb);
         json.put("hasKeystore", hasKeystore);
+        json.put("hasNativeLibs", hasNativeLibs);
+        json.put("hasPermissions", hasPermissions);
+        json.put("permissionsCount", permissionsCount);
+        json.put("androidVersionAtBackup", androidVersionAtBackup);
         if (keystoreFiles != null) {
             JSONArray arr = new JSONArray();
             for (String f : keystoreFiles) arr.put(f);
@@ -63,7 +73,7 @@ public class BackupMeta {
     }
 
     /**
-     * ساخت BackupMeta از یک JSONObject
+     * ساخت BackupMeta از JSONObject
      */
     public static BackupMeta fromJson(JSONObject json) throws JSONException {
         BackupMeta meta = new BackupMeta();
@@ -75,6 +85,7 @@ public class BackupMeta {
         meta.versionCode = json.optLong("versionCode", 0);
         meta.createdAt = json.optLong("createdAt", 0);
         meta.uid = json.optInt("uid", -1);
+        meta.gid = json.optInt("gid", -1);
         meta.selinuxContext = json.optString("selinuxContext", "");
         meta.totalSize = json.optLong("totalSize", 0);
         meta.hasApk = json.optBoolean("hasApk", false);
@@ -84,6 +95,10 @@ public class BackupMeta {
         meta.hasExternalData = json.optBoolean("hasExternalData", false);
         meta.hasObb = json.optBoolean("hasObb", false);
         meta.hasKeystore = json.optBoolean("hasKeystore", false);
+        meta.hasNativeLibs = json.optBoolean("hasNativeLibs", false);
+        meta.hasPermissions = json.optBoolean("hasPermissions", false);
+        meta.permissionsCount = json.optInt("permissionsCount", 0);
+        meta.androidVersionAtBackup = json.optInt("androidVersionAtBackup", 0);
         
         JSONArray arr = json.optJSONArray("keystoreFiles");
         if (arr != null) {
@@ -99,56 +114,71 @@ public class BackupMeta {
 
     // Getters and Setters
     public String getBackupId() { return backupId; }
-    public void setBackupId(String backupId) { this.backupId = backupId; }
+    public void setBackupId(String v) { this.backupId = v; }
 
     public String getBackupName() { return backupName; }
-    public void setBackupName(String backupName) { this.backupName = backupName; }
+    public void setBackupName(String v) { this.backupName = v; }
 
     public String getPackageName() { return packageName; }
-    public void setPackageName(String packageName) { this.packageName = packageName; }
+    public void setPackageName(String v) { this.packageName = v; }
 
     public String getAppName() { return appName; }
-    public void setAppName(String appName) { this.appName = appName; }
+    public void setAppName(String v) { this.appName = v; }
 
     public String getVersionName() { return versionName; }
-    public void setVersionName(String versionName) { this.versionName = versionName; }
+    public void setVersionName(String v) { this.versionName = v; }
 
     public long getVersionCode() { return versionCode; }
-    public void setVersionCode(long versionCode) { this.versionCode = versionCode; }
+    public void setVersionCode(long v) { this.versionCode = v; }
 
     public long getCreatedAt() { return createdAt; }
-    public void setCreatedAt(long createdAt) { this.createdAt = createdAt; }
+    public void setCreatedAt(long v) { this.createdAt = v; }
 
     public int getUid() { return uid; }
-    public void setUid(int uid) { this.uid = uid; }
+    public void setUid(int v) { this.uid = v; }
+
+    public int getGid() { return gid; }
+    public void setGid(int v) { this.gid = v; }
 
     public String getSelinuxContext() { return selinuxContext; }
-    public void setSelinuxContext(String selinuxContext) { this.selinuxContext = selinuxContext; }
+    public void setSelinuxContext(String v) { this.selinuxContext = v; }
 
     public long getTotalSize() { return totalSize; }
-    public void setTotalSize(long totalSize) { this.totalSize = totalSize; }
+    public void setTotalSize(long v) { this.totalSize = v; }
 
     public boolean hasApk() { return hasApk; }
-    public void setHasApk(boolean hasApk) { this.hasApk = hasApk; }
+    public void setHasApk(boolean v) { this.hasApk = v; }
 
     public boolean hasSplitApks() { return hasSplitApks; }
-    public void setHasSplitApks(boolean hasSplitApks) { this.hasSplitApks = hasSplitApks; }
+    public void setHasSplitApks(boolean v) { this.hasSplitApks = v; }
 
     public boolean hasInternalData() { return hasInternalData; }
-    public void setHasInternalData(boolean hasInternalData) { this.hasInternalData = hasInternalData; }
+    public void setHasInternalData(boolean v) { this.hasInternalData = v; }
 
     public boolean hasDeviceProtectedData() { return hasDeviceProtectedData; }
-    public void setHasDeviceProtectedData(boolean hasDeviceProtectedData) { this.hasDeviceProtectedData = hasDeviceProtectedData; }
+    public void setHasDeviceProtectedData(boolean v) { this.hasDeviceProtectedData = v; }
 
     public boolean hasExternalData() { return hasExternalData; }
-    public void setHasExternalData(boolean hasExternalData) { this.hasExternalData = hasExternalData; }
+    public void setHasExternalData(boolean v) { this.hasExternalData = v; }
 
     public boolean hasObb() { return hasObb; }
-    public void setHasObb(boolean hasObb) { this.hasObb = hasObb; }
+    public void setHasObb(boolean v) { this.hasObb = v; }
 
     public boolean hasKeystore() { return hasKeystore; }
-    public void setHasKeystore(boolean hasKeystore) { this.hasKeystore = hasKeystore; }
+    public void setHasKeystore(boolean v) { this.hasKeystore = v; }
+
+    public boolean hasNativeLibs() { return hasNativeLibs; }
+    public void setHasNativeLibs(boolean v) { this.hasNativeLibs = v; }
+
+    public boolean hasPermissions() { return hasPermissions; }
+    public void setHasPermissions(boolean v) { this.hasPermissions = v; }
 
     public String[] getKeystoreFiles() { return keystoreFiles; }
-    public void setKeystoreFiles(String[] keystoreFiles) { this.keystoreFiles = keystoreFiles; }
+    public void setKeystoreFiles(String[] v) { this.keystoreFiles = v; }
+
+    public int getPermissionsCount() { return permissionsCount; }
+    public void setPermissionsCount(int v) { this.permissionsCount = v; }
+
+    public int getAndroidVersionAtBackup() { return androidVersionAtBackup; }
+    public void setAndroidVersionAtBackup(int v) { this.androidVersionAtBackup = v; }
 }
