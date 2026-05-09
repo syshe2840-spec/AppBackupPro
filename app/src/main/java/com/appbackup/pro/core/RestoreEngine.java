@@ -12,6 +12,9 @@ import java.io.File;
 
 public class RestoreEngine {
     private static final String TAG = "AppBackupPro_DEBUG";
+    
+    // ⭐ مسیر موقت که system_server بهش دسترسی داره
+    private static final String TMP_DIR = "/data/local/tmp/appbackup_install";
 
     private final Context context;
     private ProgressCallback progressCallback;
@@ -88,10 +91,6 @@ public class RestoreEngine {
             if (newUid <= 0) {
                 return BackupResult.failure("Cannot get app UID");
             }
-            
-            if (originalUid > 0 && newUid != originalUid) {
-                Log.w(TAG, "⚠️ UID mismatch! Will remap keystore from " + originalUid + " to " + newUid);
-            }
 
             // توقف اپ
             updateProgress("Stopping app...", 26);
@@ -110,7 +109,7 @@ public class RestoreEngine {
                 }
             }
 
-            // ⭐ ریستور KeyStore (مهم!)
+            // ⭐ ریستور KeyStore
             if (meta.hasKeystore()) {
                 updateProgress("Restoring keystore keys...", 48);
                 restoreKeystore(backupDir, meta, newUid);
@@ -169,7 +168,7 @@ public class RestoreEngine {
     }
 
     /**
-     * نصب APK
+     * ⭐ نصب APK - با کپی به /data/local/tmp/ اول (برای SELinux)
      */
     private BackupResult installApk(File backupDir, BackupMeta meta) {
         try {
@@ -181,38 +180,118 @@ public class RestoreEngine {
             File splitsDir = new File(backupDir, "splits");
             boolean hasSplits = meta.hasSplitApks() && splitsDir.exists() && splitsDir.isDirectory();
 
-            if (!hasSplits) {
-                updateProgress("Installing APK...", 15);
-                String cmd = "pm install -r " + RootShell.escapePath(baseApk.getAbsolutePath());
-                RootShell.Result r = RootShell.run(cmd);
-                logResult("pm install", r);
-                if (!r.success || !r.stdout.contains("Success")) {
-                    return BackupResult.failure("APK install failed: " + r.allOutput());
-                }
-            } else {
-                updateProgress("Installing APK with splits...", 15);
-                BackupResult r = installSplitApks(baseApk, splitsDir);
-                if (!r.isSuccess()) {
-                    return r;
+            // 🔥 مرحله ۱: ساخت پوشه‌ی موقت توی /data/local/tmp/
+            Log.d(TAG, "─── PREPARING INSTALL ───");
+            Log.d(TAG, "Cleaning tmp dir: " + TMP_DIR);
+            RootShell.run("rm -rf " + TMP_DIR);
+            RootShell.Result mkdirR = RootShell.run("mkdir -p " + TMP_DIR);
+            logResult("mkdir tmp", mkdirR);
+
+            // 🔥 مرحله ۲: کپی base.apk به /data/local/tmp/
+            String tmpBaseApk = TMP_DIR + "/base.apk";
+            Log.d(TAG, "Copying APK to tmp: " + tmpBaseApk);
+            RootShell.Result cpBase = RootShell.run("cp -f " 
+                + RootShell.escapePath(baseApk.getAbsolutePath()) 
+                + " " + tmpBaseApk);
+            logResult("Copy base.apk to tmp", cpBase);
+            
+            if (!cpBase.success) {
+                return BackupResult.failure("Cannot copy APK to tmp: " + cpBase.allOutput());
+            }
+
+            // 🔥 مرحله ۳: تنظیم permissions و SELinux برای فایل‌های tmp
+            RootShell.run("chmod 644 " + tmpBaseApk);
+            RootShell.run("chown shell:shell " + tmpBaseApk);
+            RootShell.run("restorecon " + tmpBaseApk);
+
+            // 🔥 مرحله ۴: کپی split APKs (اگه باشن)
+            if (hasSplits) {
+                File[] splits = splitsDir.listFiles();
+                if (splits != null) {
+                    for (File split : splits) {
+                        String tmpSplit = TMP_DIR + "/" + split.getName();
+                        Log.d(TAG, "Copying split: " + split.getName());
+                        RootShell.Result cpSplit = RootShell.run("cp -f " 
+                            + RootShell.escapePath(split.getAbsolutePath()) 
+                            + " " + RootShell.escapePath(tmpSplit));
+                        logResult("Copy split: " + split.getName(), cpSplit);
+                        
+                        if (cpSplit.success) {
+                            RootShell.run("chmod 644 " + RootShell.escapePath(tmpSplit));
+                            RootShell.run("chown shell:shell " + RootShell.escapePath(tmpSplit));
+                            RootShell.run("restorecon " + RootShell.escapePath(tmpSplit));
+                        }
+                    }
                 }
             }
-            return BackupResult.success("APK installed");
+
+            // 🔥 مرحله ۵: نصب از tmp
+            BackupResult result;
+            if (!hasSplits) {
+                updateProgress("Installing APK...", 15);
+                result = installSingleApkFromTmp(tmpBaseApk);
+            } else {
+                updateProgress("Installing APK with splits...", 15);
+                result = installSplitApksFromTmp(splitsDir);
+            }
+
+            // 🔥 مرحله ۶: پاک کردن tmp (مهم برای امنیت)
+            Log.d(TAG, "Cleaning tmp dir...");
+            RootShell.run("rm -rf " + TMP_DIR);
+
+            return result;
+            
+        } catch (Exception e) {
+            // پاک کردن tmp در صورت خطا
+            RootShell.run("rm -rf " + TMP_DIR);
+            return BackupResult.failure("Install error: " + e.getMessage());
+        }
+    }
+
+    /**
+     * نصب APK تکی از /data/local/tmp/
+     */
+    private BackupResult installSingleApkFromTmp(String tmpApkPath) {
+        try {
+            String cmd = "pm install -r " + tmpApkPath;
+            RootShell.Result r = RootShell.run(cmd);
+            logResult("pm install (from tmp)", r);
+            
+            if (r.success && r.stdout.contains("Success")) {
+                return BackupResult.success("APK installed");
+            }
+            
+            // اگه pm install نشد، cmd install رو امتحان کنیم (اندروید جدید)
+            Log.d(TAG, "Trying cmd install...");
+            String cmd2 = "cmd package install -r " + tmpApkPath;
+            RootShell.Result r2 = RootShell.run(cmd2);
+            logResult("cmd package install", r2);
+            
+            if (r2.success && (r2.stdout.contains("Success") || r2.stderr.contains("Success"))) {
+                return BackupResult.success("APK installed");
+            }
+            
+            return BackupResult.failure("APK install failed: " + r.allOutput());
         } catch (Exception e) {
             return BackupResult.failure("Install error: " + e.getMessage());
         }
     }
 
     /**
-     * نصب APK با split‌ها
+     * نصب APK با split‌ها از /data/local/tmp/
      */
-    private BackupResult installSplitApks(File baseApk, File splitsDir) {
+    private BackupResult installSplitApksFromTmp(File splitsDir) {
         try {
-            long totalSize = baseApk.length();
+            // محاسبه‌ی سایز کل از فایل‌های توی tmp
+            File tmpBase = new File(TMP_DIR + "/base.apk");
+            long totalSize = tmpBase.length();
+            
             File[] splits = splitsDir.listFiles();
             if (splits != null) {
                 for (File s : splits) totalSize += s.length();
             }
 
+            // ساخت session
             String createCmd = "pm install-create -r -S " + totalSize;
             RootShell.Result createResult = RootShell.run(createCmd);
             logResult("pm install-create", createResult);
@@ -229,21 +308,27 @@ public class RestoreEngine {
             String sessionId = output.substring(start + 1, end);
             Log.d(TAG, "Session ID: " + sessionId);
 
-            String writeBaseCmd = "pm install-write -S " + baseApk.length() + " "
-                    + sessionId + " base " + RootShell.escapePath(baseApk.getAbsolutePath());
+            // write base از tmp
+            String tmpBaseApk = TMP_DIR + "/base.apk";
+            String writeBaseCmd = "pm install-write -S " + tmpBase.length() + " "
+                    + sessionId + " base " + tmpBaseApk;
             RootShell.Result wr = RootShell.run(writeBaseCmd);
-            logResult("install-write base", wr);
+            logResult("install-write base (from tmp)", wr);
             if (!wr.success) {
                 RootShell.run("pm install-abandon " + sessionId);
                 return BackupResult.failure("Cannot write base APK: " + wr.allOutput());
             }
 
+            // write splits از tmp
             if (splits != null) {
                 for (File split : splits) {
                     String splitName = split.getName().replace(".apk", "");
-                    String writeSplitCmd = "pm install-write -S " + split.length() + " "
+                    String tmpSplit = TMP_DIR + "/" + split.getName();
+                    File tmpSplitFile = new File(tmpSplit);
+                    
+                    String writeSplitCmd = "pm install-write -S " + tmpSplitFile.length() + " "
                             + sessionId + " " + splitName + " "
-                            + RootShell.escapePath(split.getAbsolutePath());
+                            + RootShell.escapePath(tmpSplit);
                     RootShell.Result sr = RootShell.run(writeSplitCmd);
                     logResult("install-write " + splitName, sr);
                     if (!sr.success) {
@@ -253,6 +338,7 @@ public class RestoreEngine {
                 }
             }
 
+            // commit
             String commitCmd = "pm install-commit " + sessionId;
             RootShell.Result commitResult = RootShell.run(commitCmd);
             logResult("install-commit", commitResult);
@@ -296,8 +382,7 @@ public class RestoreEngine {
     }
 
     /**
-     * ⭐ ریستور KeyStore با UID mapping
-     * این برای حل خطای AEADBadTagException ضروریه
+     * ریستور KeyStore با UID mapping
      */
     private void restoreKeystore(File backupDir, BackupMeta meta, int newUid) {
         try {
@@ -314,13 +399,11 @@ public class RestoreEngine {
             
             File[] ksFiles = keystoreDir.listFiles();
             if (ksFiles == null || ksFiles.length == 0) {
-                Log.d(TAG, "No keystore files");
                 return;
             }
             
             int oldUid = meta.getUid();
             
-            // پیدا کردن مسیر keystore
             String keystoreTarget = "/data/misc/keystore/user_0";
             if (!RootShell.dirExists(keystoreTarget)) {
                 keystoreTarget = "/data/misc/keystore";
@@ -328,8 +411,6 @@ public class RestoreEngine {
             
             Log.d(TAG, "Target: " + keystoreTarget);
             
-            // توقف keystore service
-            Log.d(TAG, "Stopping keystore service...");
             RootShell.run("stop keystore 2>/dev/null");
             RootShell.run("stop keystore2 2>/dev/null");
             Thread.sleep(800);
@@ -338,14 +419,12 @@ public class RestoreEngine {
             for (File ksFile : ksFiles) {
                 String fileName = ksFile.getName();
                 
-                // فایل‌های مشترک با prefix _shared_
                 if (fileName.startsWith("_shared_")) {
                     String realName = fileName.substring("_shared_".length());
                     String destPath = "/data/misc/keystore/" + realName;
                     String cpCmd = "cp -f " + RootShell.escapePath(ksFile.getAbsolutePath())
                             + " " + RootShell.escapePath(destPath);
                     RootShell.Result cpR = RootShell.run(cpCmd);
-                    logResult("KS shared: " + realName, cpR);
                     if (cpR.success) {
                         RootShell.run("chmod 600 " + RootShell.escapePath(destPath));
                         RootShell.run("chown keystore:keystore " + RootShell.escapePath(destPath) + " 2>/dev/null");
@@ -356,8 +435,6 @@ public class RestoreEngine {
                 }
                 
                 String newFileName = fileName;
-                
-                // اگه UID عوض شده، اسم فایل رو map کنیم
                 if (oldUid > 0 && newUid != oldUid && fileName.startsWith(oldUid + "_")) {
                     newFileName = newUid + fileName.substring(String.valueOf(oldUid).length());
                     Log.d(TAG, "Remap: " + fileName + " → " + newFileName);
@@ -367,11 +444,9 @@ public class RestoreEngine {
                 String cpCmd = "cp -f " + RootShell.escapePath(ksFile.getAbsolutePath())
                         + " " + RootShell.escapePath(destPath);
                 RootShell.Result cpR = RootShell.run(cpCmd);
-                logResult("KS: " + newFileName, cpR);
                 
                 if (cpR.success) {
                     RootShell.run("chmod 600 " + RootShell.escapePath(destPath));
-                    // permissions: keystore یا system
                     RootShell.run("chown keystore:keystore " + RootShell.escapePath(destPath) + " 2>/dev/null");
                     RootShell.run("chown system:system " + RootShell.escapePath(destPath) + " 2>/dev/null");
                     RootShell.run("restorecon " + RootShell.escapePath(destPath));
@@ -379,8 +454,6 @@ public class RestoreEngine {
                 }
             }
             
-            // restart keystore service
-            Log.d(TAG, "Starting keystore service...");
             RootShell.run("start keystore 2>/dev/null");
             RootShell.run("start keystore2 2>/dev/null");
             Thread.sleep(1500);
@@ -474,7 +547,6 @@ public class RestoreEngine {
             RootShell.run("restorecon -R /sdcard/Android/data/" + packageName);
         }
         
-        // SELinux برای keystore
         RootShell.run("restorecon -R /data/misc/keystore 2>/dev/null");
     }
-}
+                        }
