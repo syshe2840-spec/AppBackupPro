@@ -11,14 +11,15 @@ import com.appbackup.pro.utils.FileUtils;
 import java.io.File;
 
 /**
- * موتور اصلی ریستور - نسخه‌ی فول قوی قوی
+ * موتور اصلی ریستور - نسخه‌ی نهایی فول قوی
  * Features:
- * - Dry-run mode (پیش‌نمایش بدون تغییر)
- * - Force mode (ادامه با وجود خطاها)
- * - Verification (چک قبل و بعد)
+ * - Dry-run mode
+ * - Force mode
+ * - Pre/Post verification
+ * - SHA256 integrity check
+ * - Atomic Restore با Snapshot + Rollback
  * - Native libs restore
  * - Runtime permissions restore
- * - SELinux + ownership کامل
  */
 public class RestoreEngine {
     private static final String TAG = "AppBackupPro_DEBUG";
@@ -28,7 +29,6 @@ public class RestoreEngine {
     private final Context context;
     private ProgressCallback progressCallback;
     
-    // ⭐ Modes
     private boolean dryRun = false;
     private boolean forceMode = false;
     private boolean skipVerification = false;
@@ -45,25 +45,16 @@ public class RestoreEngine {
         this.progressCallback = callback;
     }
 
-    /**
-     * ⭐ حالت dry-run: فقط چک می‌کنه چی قراره اتفاق بیفته، تغییر نمی‌ده
-     */
     public RestoreEngine setDryRun(boolean dryRun) {
         this.dryRun = dryRun;
         return this;
     }
 
-    /**
-     * ⭐ حالت force: حتی اگه خطا بده، ادامه می‌ده
-     */
     public RestoreEngine setForceMode(boolean forceMode) {
         this.forceMode = forceMode;
         return this;
     }
 
-    /**
-     * ⭐ رد کردن verification (سریع‌تر ولی نا‌امن‌تر)
-     */
     public RestoreEngine setSkipVerification(boolean skipVerification) {
         this.skipVerification = skipVerification;
         return this;
@@ -87,6 +78,7 @@ public class RestoreEngine {
     public BackupResult restore(File backupDir, BackupMeta meta) {
         long startTime = System.currentTimeMillis();
         String packageName = meta.getPackageName();
+        RestoreSnapshot snapshot = null;
 
         Log.d(TAG, "");
         Log.d(TAG, "╔════════════════════════════════════════");
@@ -105,7 +97,7 @@ public class RestoreEngine {
 
             // ⭐ مرحله ۲: Pre-restore verification
             if (!skipVerification) {
-                updateProgress("Verifying backup integrity...", 5);
+                updateProgress("Verifying backup integrity...", 4);
                 BackupVerifier.VerifyResult preVerify = BackupVerifier.verifyBackup(backupDir, meta);
                 Log.d(TAG, "Pre-verify: " + preVerify.summary());
                 
@@ -115,6 +107,16 @@ public class RestoreEngine {
                 
                 if (!preVerify.success && forceMode) {
                     Log.w(TAG, "⚠ Force mode: continuing despite verification errors");
+                }
+                
+                // ⭐ SHA256 hash verification
+                updateProgress("Checking file integrity (SHA256)...", 6);
+                boolean integrityOk = IntegrityChecker.verifyChecksums(backupDir);
+                if (!integrityOk && !forceMode) {
+                    return BackupResult.failure("Backup is corrupted (SHA256 mismatch).\nFiles may have been damaged or modified.");
+                }
+                if (!integrityOk && forceMode) {
+                    Log.w(TAG, "⚠ Force mode: continuing despite integrity errors");
                 }
             }
 
@@ -128,12 +130,20 @@ public class RestoreEngine {
                 return result;
             }
 
-            // مرحله ۴: نصب APK
+            // ⭐⭐⭐ مرحله ۴: Snapshot قبل از تغییرات (Atomic Restore)
+            updateProgress("Creating safety snapshot...", 8);
+            snapshot = new RestoreSnapshot(packageName);
+            if (!snapshot.create()) {
+                Log.w(TAG, "⚠ Snapshot creation failed - rollback won't be available");
+                snapshot = null;
+            }
+
+            // مرحله ۵: نصب APK
             boolean appInstalled = AppUtils.isAppInstalled(context, packageName);
             Log.d(TAG, "App installed: " + appInstalled);
             
             if (!appInstalled) {
-                updateProgress("App not installed. Installing APK...", 8);
+                updateProgress("App not installed. Installing APK...", 12);
                 if (!meta.hasApk()) {
                     return BackupResult.failure("App not installed and no APK in backup");
                 }
@@ -144,8 +154,8 @@ public class RestoreEngine {
                 Thread.sleep(2000);
             }
 
-            // مرحله ۵: UID/GID check
-            updateProgress("Getting app UID...", 18);
+            // مرحله ۶: UID/GID check
+            updateProgress("Getting app UID...", 22);
             int newUid = RootShell.getAppUid(packageName);
             int originalUid = meta.getUid();
             Log.d(TAG, "UID: current=" + newUid + " backup=" + originalUid);
@@ -154,17 +164,17 @@ public class RestoreEngine {
                 if (!forceMode) {
                     return BackupResult.failure("Cannot get app UID");
                 }
-                newUid = originalUid;  // در force mode، UID قبلی رو امتحان کنیم
+                newUid = originalUid;
             }
 
-            // مرحله ۶: توقف اپ
-            updateProgress("Stopping app...", 22);
+            // مرحله ۷: توقف اپ
+            updateProgress("Stopping app...", 26);
             RootShell.run("am force-stop " + packageName);
             Thread.sleep(1000);
 
-            // مرحله ۷: Internal Data
+            // مرحله ۸: Internal Data
             if (meta.hasInternalData()) {
-                updateProgress("Restoring internal data...", 28);
+                updateProgress("Restoring internal data...", 32);
                 File dataDir = new File(backupDir, "data");
                 if (dataDir.exists()) {
                     BackupResult r = restoreInternalData(packageName, dataDir, newUid);
@@ -174,58 +184,58 @@ public class RestoreEngine {
                 }
             }
 
-            // ⭐ مرحله ۸: Native Libraries (جدید)
+            // مرحله ۹: Native Libraries
             if (meta.hasNativeLibs()) {
-                updateProgress("Restoring native libraries...", 38);
+                updateProgress("Restoring native libraries...", 42);
                 restoreNativeLibs(packageName, backupDir, newUid);
             }
 
-            // مرحله ۹: KeyStore
+            // مرحله ۱۰: KeyStore
             if (meta.hasKeystore()) {
-                updateProgress("Restoring keystore keys...", 46);
+                updateProgress("Restoring keystore keys...", 50);
                 restoreKeystore(backupDir, meta, newUid);
             }
 
-            // مرحله ۱۰: DE Data
+            // مرحله ۱۱: DE Data
             if (meta.hasDeviceProtectedData()) {
-                updateProgress("Restoring device-protected data...", 56);
+                updateProgress("Restoring device-protected data...", 60);
                 File deDir = new File(backupDir, "data_de");
                 if (deDir.exists()) {
                     restoreDeData(packageName, deDir, newUid);
                 }
             }
 
-            // مرحله ۱۱: External Data
+            // مرحله ۱۲: External Data
             if (meta.hasExternalData()) {
-                updateProgress("Restoring external data...", 66);
+                updateProgress("Restoring external data...", 70);
                 File extDir = new File(backupDir, "ext_data");
                 if (extDir.exists()) {
                     restoreExternalData(packageName, extDir);
                 }
             }
 
-            // مرحله ۱۲: OBB
+            // مرحله ۱۳: OBB
             if (meta.hasObb()) {
-                updateProgress("Restoring OBB files...", 76);
+                updateProgress("Restoring OBB files...", 80);
                 File obbDir = new File(backupDir, "obb");
                 if (obbDir.exists()) {
                     restoreObb(packageName, obbDir);
                 }
             }
 
-            // مرحله ۱۳: SELinux + Ownership
-            updateProgress("Fixing SELinux and ownership...", 84);
+            // مرحله ۱۴: SELinux + Ownership
+            updateProgress("Fixing SELinux and ownership...", 86);
             fixSelinuxContexts(packageName);
             fixOwnership(packageName, newUid);
 
-            // ⭐ مرحله ۱۴: Runtime Permissions (جدید)
+            // مرحله ۱۵: Permissions
             if (meta.hasPermissions()) {
-                updateProgress("Restoring permissions...", 88);
+                updateProgress("Restoring permissions...", 90);
                 int restored = PermissionsManager.restorePermissions(packageName, backupDir);
                 Log.d(TAG, "Restored " + restored + "/" + meta.getPermissionsCount() + " permissions");
             }
 
-            // ⭐ مرحله ۱۵: Post-restore verification (جدید)
+            // مرحله ۱۶: Post-restore verification
             String verifyReport = "";
             if (!skipVerification) {
                 updateProgress("Verifying restore...", 94);
@@ -234,13 +244,24 @@ public class RestoreEngine {
                 Log.d(TAG, "Post-verify: " + verifyReport);
                 
                 if (!postVerify.success && !forceMode) {
+                    // ⭐ post-verify fail → rollback
+                    if (snapshot != null) {
+                        Log.w(TAG, "Post-verify failed, rolling back...");
+                        snapshot.rollback();
+                        return BackupResult.failure("Restore verification failed (rolled back):\n" + verifyReport);
+                    }
                     return BackupResult.failure("Restore verification failed:\n" + verifyReport);
                 }
             }
 
-            // مرحله ۱۶: نهایی
+            // مرحله ۱۷: نهایی
             updateProgress("Finalizing...", 98);
             RootShell.run("am force-stop " + packageName);
+
+            // ⭐⭐⭐ Commit snapshot (موفق)
+            if (snapshot != null) {
+                snapshot.commit();
+            }
 
             updateProgress("Restore complete!", 100);
             
@@ -261,12 +282,24 @@ public class RestoreEngine {
 
         } catch (Exception e) {
             Log.e(TAG, "RESTORE FAILED", e);
-            return BackupResult.failure("Restore failed: " + e.getMessage(), e.toString());
+            
+            // ⭐⭐⭐ ROLLBACK خودکار از snapshot
+            String rollbackMsg = "";
+            if (snapshot != null) {
+                Log.d(TAG, "Attempting rollback from snapshot...");
+                if (snapshot.rollback()) {
+                    rollbackMsg = "\n\n✓ App restored to previous state (rollback successful)";
+                } else {
+                    rollbackMsg = "\n\n⚠ Rollback failed - app may be in inconsistent state";
+                }
+            }
+            
+            return BackupResult.failure("Restore failed: " + e.getMessage() + rollbackMsg, e.toString());
         }
     }
 
     /**
-     * ⭐ گزارش Dry-Run (پیش‌نمایش)
+     * گزارش Dry-Run
      */
     private String generateDryRunReport(File backupDir, BackupMeta meta) {
         StringBuilder sb = new StringBuilder();
@@ -287,6 +320,7 @@ public class RestoreEngine {
             sb.append("  ⏭ App already installed (will replace data)\n");
         }
         
+        sb.append("  📸 Create safety snapshot (for rollback)\n");
         if (meta.hasInternalData()) sb.append("  💾 Restore internal data\n");
         if (meta.hasNativeLibs()) sb.append("  📚 Restore native libraries\n");
         if (meta.hasKeystore()) sb.append("  🔑 Restore keystore (").append(
@@ -296,9 +330,9 @@ public class RestoreEngine {
         if (meta.hasExternalData()) sb.append("  📁 Restore external data\n");
         if (meta.hasObb()) sb.append("  🎮 Restore OBB files\n");
         if (meta.hasPermissions()) sb.append("  ✅ Restore ").append(meta.getPermissionsCount()).append(" permissions\n");
+        sb.append("  🛡 Verify integrity & rollback on failure\n");
         
-        sb.append("\nNo changes were made (dry-run mode).\n");
-        sb.append("Run without dry-run to apply changes.");
+        sb.append("\nNo changes were made (dry-run mode).");
         
         return sb.toString();
     }
@@ -471,9 +505,6 @@ public class RestoreEngine {
         }
     }
 
-    /**
-     * ⭐ ریستور Native Libraries
-     */
     private void restoreNativeLibs(String packageName, File backupDir, int uid) {
         try {
             File libsDir = new File(backupDir, "native_libs");
@@ -483,18 +514,14 @@ public class RestoreEngine {
             
             Log.d(TAG, "─── NATIVE LIBS RESTORE ───");
             
-            // مسیر هدف
             String targetLibPath = "/data/data/" + packageName + "/lib";
             
-            // اگه /data/data/<pkg>/lib یه symlink هست، ولش کن
-            // فقط اگه پوشه‌ی واقعیه ریستور کن
             RootShell.Result statR = RootShell.run("[ -L " + targetLibPath + " ] && echo SYMLINK || echo DIR");
             if (statR.stdout.contains("SYMLINK")) {
-                Log.d(TAG, "Native libs path is symlink, skipping (system manages it)");
+                Log.d(TAG, "Native libs path is symlink, skipping");
                 return;
             }
             
-            // اگه پوشه نیست، ساختش
             if (!RootShell.dirExists(targetLibPath)) {
                 RootShell.run("mkdir -p " + targetLibPath);
             }
@@ -653,9 +680,6 @@ public class RestoreEngine {
         RootShell.run("restorecon -R /data/misc/keystore 2>/dev/null");
     }
 
-    /**
-     * ⭐ اصلاح ownership کامل برای همه‌ی مسیرها
-     */
     private void fixOwnership(String packageName, int uid) {
         Log.d(TAG, "─── OWNERSHIP FIX ───");
         
