@@ -50,24 +50,20 @@ public class RestoreEngine {
         Log.d(TAG, "");
         Log.d(TAG, "╔════════════════════════════════════════");
         Log.d(TAG, "║ RESTORE START: " + packageName);
-        Log.d(TAG, "║ Backup dir: " + backupDir.getAbsolutePath());
         Log.d(TAG, "╚════════════════════════════════════════");
 
         try {
             updateProgress("Checking root access...", 2);
             if (!RootShell.checkRootPermission()) {
-                Log.e(TAG, "✗ Root denied");
                 return BackupResult.failure("Root access denied");
             }
-            Log.d(TAG, "✓ Root OK");
 
             updateProgress("Verifying backup...", 5);
             if (!backupDir.exists() || !backupDir.isDirectory()) {
                 return BackupResult.failure("Backup folder not found");
             }
-            Log.d(TAG, "✓ Backup folder exists");
 
-            // چک نصب بودن اپ
+            // نصب اپ اگه نباشه
             boolean appInstalled = AppUtils.isAppInstalled(context, packageName);
             Log.d(TAG, "App installed: " + appInstalled);
             
@@ -83,23 +79,28 @@ public class RestoreEngine {
                 Thread.sleep(2000);
             }
 
-            // گرفتن UID جدید
-            updateProgress("Getting app UID...", 25);
+            // UID check
+            updateProgress("Getting app UID...", 22);
             int newUid = RootShell.getAppUid(packageName);
-            Log.d(TAG, "New UID: " + newUid + " | Old UID was: " + meta.getUid());
+            int originalUid = meta.getUid();
+            Log.d(TAG, "UID check: current=" + newUid + " backup=" + originalUid);
+            
             if (newUid <= 0) {
                 return BackupResult.failure("Cannot get app UID");
             }
+            
+            if (originalUid > 0 && newUid != originalUid) {
+                Log.w(TAG, "⚠️ UID mismatch! Will remap keystore from " + originalUid + " to " + newUid);
+            }
 
             // توقف اپ
-            updateProgress("Stopping app...", 28);
-            RootShell.Result stopR = RootShell.run("am force-stop " + packageName);
-            logResult("am force-stop", stopR);
+            updateProgress("Stopping app...", 26);
+            RootShell.run("am force-stop " + packageName);
             Thread.sleep(800);
 
             // ریستور Internal Data
             if (meta.hasInternalData()) {
-                updateProgress("Restoring internal data...", 35);
+                updateProgress("Restoring internal data...", 32);
                 File dataDir = new File(backupDir, "data");
                 if (dataDir.exists()) {
                     BackupResult r = restoreInternalData(packageName, dataDir, newUid);
@@ -109,9 +110,15 @@ public class RestoreEngine {
                 }
             }
 
+            // ⭐ ریستور KeyStore (مهم!)
+            if (meta.hasKeystore()) {
+                updateProgress("Restoring keystore keys...", 48);
+                restoreKeystore(backupDir, meta, newUid);
+            }
+
             // ریستور DE Data
             if (meta.hasDeviceProtectedData()) {
-                updateProgress("Restoring device-protected data...", 55);
+                updateProgress("Restoring device-protected data...", 58);
                 File deDir = new File(backupDir, "data_de");
                 if (deDir.exists()) {
                     restoreDeData(packageName, deDir, newUid);
@@ -136,7 +143,7 @@ public class RestoreEngine {
                 }
             }
 
-            // اصلاح SELinux contexts
+            // SELinux
             updateProgress("Fixing SELinux contexts...", 92);
             fixSelinuxContexts(packageName);
 
@@ -156,11 +163,7 @@ public class RestoreEngine {
             return result;
 
         } catch (Exception e) {
-            Log.e(TAG, "");
-            Log.e(TAG, "╔════════════════════════════════════════");
-            Log.e(TAG, "║ RESTORE FAILED ✗");
-            Log.e(TAG, "║ Error: " + e.getMessage());
-            Log.e(TAG, "╚════════════════════════════════════════", e);
+            Log.e(TAG, "RESTORE FAILED", e);
             return BackupResult.failure("Restore failed: " + e.getMessage(), e.toString());
         }
     }
@@ -193,7 +196,6 @@ public class RestoreEngine {
                     return r;
                 }
             }
-
             return BackupResult.success("APK installed");
         } catch (Exception e) {
             return BackupResult.failure("Install error: " + e.getMessage());
@@ -208,9 +210,7 @@ public class RestoreEngine {
             long totalSize = baseApk.length();
             File[] splits = splitsDir.listFiles();
             if (splits != null) {
-                for (File s : splits) {
-                    totalSize += s.length();
-                }
+                for (File s : splits) totalSize += s.length();
             }
 
             String createCmd = "pm install-create -r -S " + totalSize;
@@ -232,7 +232,7 @@ public class RestoreEngine {
             String writeBaseCmd = "pm install-write -S " + baseApk.length() + " "
                     + sessionId + " base " + RootShell.escapePath(baseApk.getAbsolutePath());
             RootShell.Result wr = RootShell.run(writeBaseCmd);
-            logResult("pm install-write base", wr);
+            logResult("install-write base", wr);
             if (!wr.success) {
                 RootShell.run("pm install-abandon " + sessionId);
                 return BackupResult.failure("Cannot write base APK: " + wr.allOutput());
@@ -245,17 +245,17 @@ public class RestoreEngine {
                             + sessionId + " " + splitName + " "
                             + RootShell.escapePath(split.getAbsolutePath());
                     RootShell.Result sr = RootShell.run(writeSplitCmd);
-                    logResult("pm install-write " + splitName, sr);
+                    logResult("install-write " + splitName, sr);
                     if (!sr.success) {
                         RootShell.run("pm install-abandon " + sessionId);
-                        return BackupResult.failure("Cannot write split " + splitName + ": " + sr.allOutput());
+                        return BackupResult.failure("Cannot write split: " + sr.allOutput());
                     }
                 }
             }
 
             String commitCmd = "pm install-commit " + sessionId;
             RootShell.Result commitResult = RootShell.run(commitCmd);
-            logResult("pm install-commit", commitResult);
+            logResult("install-commit", commitResult);
             if (!commitResult.success || !commitResult.stdout.contains("Success")) {
                 return BackupResult.failure("Install commit failed: " + commitResult.allOutput());
             }
@@ -267,59 +267,139 @@ public class RestoreEngine {
     }
 
     /**
-     * ⭐ ریستور Internal Data (با cp - مثل بکاپ)
+     * ریستور Internal Data
      */
     private BackupResult restoreInternalData(String packageName, File dataDir, int uid) {
         try {
             String targetPath = "/data/data/" + packageName;
             
-            Log.d(TAG, "");
             Log.d(TAG, "─── INTERNAL DATA RESTORE ───");
-            Log.d(TAG, "Source: " + dataDir.getAbsolutePath());
-            Log.d(TAG, "Dest:   " + targetPath);
 
-            // پاک کردن داده‌ی فعلی
-            RootShell.Result clearR = RootShell.run("rm -rf " + targetPath + "/*");
-            logResult("Clear target", clearR);
+            RootShell.run("rm -rf " + targetPath + "/*");
 
-            // 🔥 استفاده از cp -rfL مثل بکاپ
             String cpCmd = "cp -rfL " + RootShell.escapePath(dataDir.getAbsolutePath() + "/.")
                     + " " + targetPath + "/";
-            Log.d(TAG, "CMD: " + cpCmd);
             RootShell.Result r = RootShell.run(cpCmd);
             logResult("Internal cp -rfL", r);
 
-            // چک کردن نتیجه با ls
             RootShell.Result lsResult = RootShell.run("ls -A " + targetPath);
-            logResult("Verify: ls -A target", lsResult);
-            
             if (lsResult.stdout.trim().isEmpty()) {
-                Log.e(TAG, "✗ NO FILES RESTORED!");
-                return BackupResult.failure("Internal data restore failed - no files. Check LogFox tag '" + TAG + "'");
+                return BackupResult.failure("Internal data restore failed - no files");
             }
 
-            // اصلاح ownership
-            String chownCmd = "chown -R " + uid + ":" + uid + " " + targetPath;
-            RootShell.Result chownR = RootShell.run(chownCmd);
-            logResult("chown", chownR);
-
+            RootShell.run("chown -R " + uid + ":" + uid + " " + targetPath);
             Log.d(TAG, "✓ Internal data restored");
             return BackupResult.success("Internal data restored");
         } catch (Exception e) {
-            Log.e(TAG, "Internal restore exception", e);
             return BackupResult.failure("Internal restore error: " + e.getMessage());
         }
     }
 
     /**
-     * ریستور DE Data (با cp)
+     * ⭐ ریستور KeyStore با UID mapping
+     * این برای حل خطای AEADBadTagException ضروریه
+     */
+    private void restoreKeystore(File backupDir, BackupMeta meta, int newUid) {
+        try {
+            File keystoreDir = new File(backupDir, "keystore");
+            if (!keystoreDir.exists() || !keystoreDir.isDirectory()) {
+                Log.d(TAG, "No keystore dir in backup");
+                return;
+            }
+            
+            Log.d(TAG, "");
+            Log.d(TAG, "─── KEYSTORE RESTORE ───");
+            Log.d(TAG, "Old UID: " + meta.getUid());
+            Log.d(TAG, "New UID: " + newUid);
+            
+            File[] ksFiles = keystoreDir.listFiles();
+            if (ksFiles == null || ksFiles.length == 0) {
+                Log.d(TAG, "No keystore files");
+                return;
+            }
+            
+            int oldUid = meta.getUid();
+            
+            // پیدا کردن مسیر keystore
+            String keystoreTarget = "/data/misc/keystore/user_0";
+            if (!RootShell.dirExists(keystoreTarget)) {
+                keystoreTarget = "/data/misc/keystore";
+            }
+            
+            Log.d(TAG, "Target: " + keystoreTarget);
+            
+            // توقف keystore service
+            Log.d(TAG, "Stopping keystore service...");
+            RootShell.run("stop keystore 2>/dev/null");
+            RootShell.run("stop keystore2 2>/dev/null");
+            Thread.sleep(800);
+            
+            int restored = 0;
+            for (File ksFile : ksFiles) {
+                String fileName = ksFile.getName();
+                
+                // فایل‌های مشترک با prefix _shared_
+                if (fileName.startsWith("_shared_")) {
+                    String realName = fileName.substring("_shared_".length());
+                    String destPath = "/data/misc/keystore/" + realName;
+                    String cpCmd = "cp -f " + RootShell.escapePath(ksFile.getAbsolutePath())
+                            + " " + RootShell.escapePath(destPath);
+                    RootShell.Result cpR = RootShell.run(cpCmd);
+                    logResult("KS shared: " + realName, cpR);
+                    if (cpR.success) {
+                        RootShell.run("chmod 600 " + RootShell.escapePath(destPath));
+                        RootShell.run("chown keystore:keystore " + RootShell.escapePath(destPath) + " 2>/dev/null");
+                        RootShell.run("restorecon " + RootShell.escapePath(destPath));
+                        restored++;
+                    }
+                    continue;
+                }
+                
+                String newFileName = fileName;
+                
+                // اگه UID عوض شده، اسم فایل رو map کنیم
+                if (oldUid > 0 && newUid != oldUid && fileName.startsWith(oldUid + "_")) {
+                    newFileName = newUid + fileName.substring(String.valueOf(oldUid).length());
+                    Log.d(TAG, "Remap: " + fileName + " → " + newFileName);
+                }
+                
+                String destPath = keystoreTarget + "/" + newFileName;
+                String cpCmd = "cp -f " + RootShell.escapePath(ksFile.getAbsolutePath())
+                        + " " + RootShell.escapePath(destPath);
+                RootShell.Result cpR = RootShell.run(cpCmd);
+                logResult("KS: " + newFileName, cpR);
+                
+                if (cpR.success) {
+                    RootShell.run("chmod 600 " + RootShell.escapePath(destPath));
+                    // permissions: keystore یا system
+                    RootShell.run("chown keystore:keystore " + RootShell.escapePath(destPath) + " 2>/dev/null");
+                    RootShell.run("chown system:system " + RootShell.escapePath(destPath) + " 2>/dev/null");
+                    RootShell.run("restorecon " + RootShell.escapePath(destPath));
+                    restored++;
+                }
+            }
+            
+            // restart keystore service
+            Log.d(TAG, "Starting keystore service...");
+            RootShell.run("start keystore 2>/dev/null");
+            RootShell.run("start keystore2 2>/dev/null");
+            Thread.sleep(1500);
+            
+            Log.d(TAG, "✓ Keystore restored: " + restored + "/" + ksFiles.length + " files");
+            
+        } catch (Exception e) {
+            Log.e(TAG, "Keystore restore error", e);
+        }
+    }
+
+    /**
+     * ریستور DE Data
      */
     private void restoreDeData(String packageName, File deDir, int uid) {
         try {
             String targetPath = "/data/user_de/0/" + packageName;
-            
             Log.d(TAG, "─── DE DATA RESTORE ───");
-
+            
             if (!RootShell.dirExists(targetPath)) {
                 RootShell.run("mkdir -p " + targetPath);
             } else {
@@ -338,12 +418,11 @@ public class RestoreEngine {
     }
 
     /**
-     * ریستور External Data (با cp)
+     * ریستور External Data
      */
     private void restoreExternalData(String packageName, File extDir) {
         try {
             String targetPath = "/sdcard/Android/data/" + packageName;
-            
             Log.d(TAG, "─── EXTERNAL DATA RESTORE ───");
             
             RootShell.run("mkdir -p " + targetPath);
@@ -352,19 +431,18 @@ public class RestoreEngine {
             String cpCmd = "cp -rfL " + RootShell.escapePath(extDir.getAbsolutePath() + "/.")
                     + " " + targetPath + "/";
             RootShell.Result r = RootShell.run(cpCmd);
-            logResult("External cp", r);
+            logResult("Ext cp", r);
         } catch (Exception e) {
             Log.e(TAG, "External data restore error", e);
         }
     }
 
     /**
-     * ریستور OBB (با cp)
+     * ریستور OBB
      */
     private void restoreObb(String packageName, File obbDir) {
         try {
             String targetPath = "/sdcard/Android/obb/" + packageName;
-            
             Log.d(TAG, "─── OBB RESTORE ───");
             
             RootShell.run("mkdir -p " + targetPath);
@@ -380,7 +458,7 @@ public class RestoreEngine {
     }
 
     /**
-     * اصلاح SELinux contexts (مهم!)
+     * اصلاح SELinux contexts
      */
     private void fixSelinuxContexts(String packageName) {
         Log.d(TAG, "─── SELINUX RESTORE ───");
@@ -389,13 +467,14 @@ public class RestoreEngine {
         logResult("restorecon /data/data", r1);
 
         if (RootShell.dirExists("/data/user_de/0/" + packageName)) {
-            RootShell.Result r2 = RootShell.run("restorecon -R /data/user_de/0/" + packageName);
-            logResult("restorecon /data/user_de", r2);
+            RootShell.run("restorecon -R /data/user_de/0/" + packageName);
         }
 
         if (RootShell.dirExists("/sdcard/Android/data/" + packageName)) {
-            RootShell.Result r3 = RootShell.run("restorecon -R /sdcard/Android/data/" + packageName);
-            logResult("restorecon /sdcard/Android/data", r3);
+            RootShell.run("restorecon -R /sdcard/Android/data/" + packageName);
         }
+        
+        // SELinux برای keystore
+        RootShell.run("restorecon -R /data/misc/keystore 2>/dev/null");
     }
-                                                             }
+}
