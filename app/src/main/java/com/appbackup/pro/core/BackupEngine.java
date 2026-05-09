@@ -14,6 +14,15 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
+/**
+ * موتور اصلی بکاپ - نسخه‌ی نهایی فول قوی
+ * Features:
+ * - App Freezing (pm disable-user)
+ * - Database WAL Checkpoint
+ * - sharedUserId support
+ * - Multi-UID KeyStore backup
+ * - SHA256 integrity checksums
+ */
 public class BackupEngine {
     private static final String TAG = "AppBackupPro_DEBUG";
 
@@ -112,7 +121,6 @@ public class BackupEngine {
             appWasFrozen = AppFreezer.freeze(packageName);
             if (!appWasFrozen) {
                 Log.w(TAG, "⚠ Could not freeze app, continuing anyway");
-                // ادامه میدیم ولی هشدار می‌دیم
                 RootShell.run("am force-stop " + packageName);
                 Thread.sleep(1000);
             }
@@ -176,7 +184,7 @@ public class BackupEngine {
             }
 
             // مرحله ۱۱: DE Data
-            updateProgress("Backing up device-protected data...", 48);
+            updateProgress("Backing up device-protected data...", 46);
             String dePath = "/data/user_de/0/" + packageName;
             if (RootShell.dirExists(dePath)) {
                 File deDir = new File(backupDir, "data_de");
@@ -190,7 +198,7 @@ public class BackupEngine {
             }
 
             // مرحله ۱۲: External Data
-            updateProgress("Backing up external data...", 58);
+            updateProgress("Backing up external data...", 56);
             String extPath = "/sdcard/Android/data/" + packageName;
             if (RootShell.dirExists(extPath)) {
                 File extDir = new File(backupDir, "ext_data");
@@ -204,7 +212,7 @@ public class BackupEngine {
             }
 
             // مرحله ۱۳: OBB
-            updateProgress("Backing up OBB files...", 68);
+            updateProgress("Backing up OBB files...", 66);
             String obbPath = "/sdcard/Android/obb/" + packageName;
             if (RootShell.dirExists(obbPath)) {
                 File obbDir = new File(backupDir, "obb");
@@ -218,10 +226,10 @@ public class BackupEngine {
             }
 
             // مرحله ۱۴: KeyStore
-            updateProgress("Backing up keystore keys...", 76);
+            updateProgress("Backing up keystore keys...", 74);
             backupKeystore(backupDir, meta, uid);
             
-            // ⭐ همینطور KeyStore برای shared packages
+            // ⭐ KeyStore برای shared packages
             for (String sharedPkg : sharedPackages) {
                 int sharedUid = RootShell.getAppUid(sharedPkg);
                 if (sharedUid > 0 && sharedUid != uid) {
@@ -231,7 +239,7 @@ public class BackupEngine {
             }
 
             // مرحله ۱۵: Permissions
-            updateProgress("Backing up permissions...", 82);
+            updateProgress("Backing up permissions...", 80);
             int permsCount = PermissionsManager.backupPermissions(packageName, backupDir);
             if (permsCount > 0) {
                 meta.setHasPermissions(true);
@@ -239,26 +247,25 @@ public class BackupEngine {
             }
 
             // مرحله ۱۶: محاسبه‌ی سایز
-            updateProgress("Calculating size...", 90);
+            updateProgress("Calculating size...", 86);
             long totalSize = FileUtils.getFolderSize(backupDir);
             meta.setTotalSize(totalSize);
 
             // مرحله ۱۷: permissions پوشه
-            updateProgress("Fixing permissions...", 94);
+            updateProgress("Fixing permissions...", 90);
             RootShell.run("chmod -R 755 " + RootShell.escapePath(backupDir.getAbsolutePath()));
 
             // مرحله ۱۸: metadata
-            // مرحله ۱۸: metadata
-            updateProgress("Writing metadata...", 96);
+            updateProgress("Writing metadata...", 94);
             File metaFile = new File(backupDir, "metadata.json");
             FileUtils.writeString(metaFile, meta.toJson().toString(2));
-            
-            // ⭐ مرحله ۱۹: SHA256 Checksums (جدید!)
-            updateProgress("Generating checksums...", 98);
+
+            // ⭐⭐⭐ مرحله ۱۹: SHA256 Checksums (جدید!)
+            updateProgress("Generating SHA256 checksums...", 97);
             int checksumsCount = IntegrityChecker.generateChecksums(backupDir);
             Log.d(TAG, "Generated " + checksumsCount + " checksums");
 
-            // مرحله ۲۰: UNFREEZE اپ
+            // ⭐⭐⭐ مرحله ۲۰: UNFREEZE اپ (مهم!)
             updateProgress("Unfreezing app...", 99);
             if (appWasFrozen) {
                 AppFreezer.unfreeze(packageName);
@@ -271,6 +278,7 @@ public class BackupEngine {
             Log.d(TAG, "║ BACKUP COMPLETE ✓");
             Log.d(TAG, "║ Duration: " + (System.currentTimeMillis() - startTime) + "ms");
             Log.d(TAG, "║ Size: " + FileUtils.formatSize(totalSize));
+            Log.d(TAG, "║ Checksums: " + checksumsCount);
             Log.d(TAG, "╚════════════════════════════════════════");
 
             BackupResult result = BackupResult.success(
@@ -302,7 +310,6 @@ public class BackupEngine {
     private List<String> getSharedUserPackages(String packageName) {
         List<String> result = new ArrayList<>();
         try {
-            // گرفتن sharedUserId اپ
             RootShell.Result r1 = RootShell.run(
                 "dumpsys package " + packageName + " | grep -i 'sharedUser=' | head -1");
             
@@ -310,19 +317,16 @@ public class BackupEngine {
                 return result;
             }
             
-            // فرمت: sharedUser=SharedUserSetting{xxx com.example.shared/10042}
             String line = r1.stdout.trim();
             int eq = line.indexOf('=');
             if (eq < 0) return result;
             
             String sharedInfo = line.substring(eq + 1);
-            // استخراج اسم shared user
             int braceStart = sharedInfo.indexOf('{');
             int braceEnd = sharedInfo.lastIndexOf('}');
             if (braceStart < 0 || braceEnd < 0) return result;
             
             String inner = sharedInfo.substring(braceStart + 1, braceEnd).trim();
-            // فرمت: xxx com.example.shared/10042
             String[] parts = inner.split("\\s+");
             if (parts.length < 2) return result;
             
@@ -332,7 +336,6 @@ public class BackupEngine {
             
             Log.d(TAG, "Shared user name: " + sharedUserName);
             
-            // پیدا کردن همه‌ی package‌هایی که این sharedUserName رو دارن
             RootShell.Result r2 = RootShell.run(
                 "pm list packages | while read line; do " +
                 "pkg=$(echo $line | sed 's/package://'); " +
@@ -423,7 +426,7 @@ public class BackupEngine {
                         if (filePath.isEmpty()) continue;
                         
                         String fileName = filePath.substring(filePath.lastIndexOf('/') + 1);
-                        if (foundFiles.contains(fileName)) continue;  // duplicate
+                        if (foundFiles.contains(fileName)) continue;
                         
                         File destFile = new File(keystoreDir, fileName);
                         String cpCmd = "cp -f " + RootShell.escapePath(filePath)
@@ -464,4 +467,4 @@ public class BackupEngine {
             Log.w(TAG, "KeyStore backup error: " + e.getMessage());
         }
     }
-}
+        }
