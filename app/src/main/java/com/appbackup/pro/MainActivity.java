@@ -16,6 +16,7 @@ import androidx.appcompat.widget.SwitchCompat;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
+import com.appbackup.pro.core.AppWarnings;
 import com.appbackup.pro.core.BackupEngine;
 import com.appbackup.pro.core.BackupRepository;
 import com.appbackup.pro.core.RestoreEngine;
@@ -32,9 +33,6 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * صفحه‌ی اصلی - نمایش لیست اپ‌ها و دکمه‌های بکاپ/ریستور
- */
 public class MainActivity extends AppCompatActivity implements AppListAdapter.OnAppClickListener {
 
     private RecyclerView recyclerView;
@@ -61,22 +59,12 @@ public class MainActivity extends AppCompatActivity implements AppListAdapter.On
         progressHelper = new ProgressDialogHelper(this);
         repository = new BackupRepository(this);
 
-        // چک کردن permission
         if (!PermissionHelper.hasStoragePermission(this)) {
             PermissionHelper.requestStoragePermission(this);
         }
 
-        // چک کردن root
         checkRootStatus();
-
-        // لود کردن لیست اپ‌ها
         loadApps();
-    }
-
-    @Override
-    protected void onResume() {
-        super.onResume();
-        // وقتی برمی‌گردیم از صفحه‌ی بکاپ‌ها، لیست رو رفرش می‌کنیم
     }
 
     private void initViews() {
@@ -90,14 +78,12 @@ public class MainActivity extends AppCompatActivity implements AppListAdapter.On
 
         recyclerView.setLayoutManager(new LinearLayoutManager(this));
 
-        // toggle برای system apps
         switchSystemApps.setChecked(showSystemApps);
         switchSystemApps.setOnCheckedChangeListener((buttonView, isChecked) -> {
             showSystemApps = isChecked;
             loadApps();
         });
 
-        // search
         etSearch.addTextChangedListener(new TextWatcher() {
             @Override
             public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
@@ -113,16 +99,12 @@ public class MainActivity extends AppCompatActivity implements AppListAdapter.On
             public void afterTextChanged(Editable s) {}
         });
 
-        // دکمه‌ی نمایش بکاپ‌ها
         btnViewBackups.setOnClickListener(v -> {
             Intent intent = new Intent(MainActivity.this, BackupListActivity.class);
             startActivity(intent);
         });
     }
 
-    /**
-     * چک کردن وضعیت root
-     */
     private void checkRootStatus() {
         new Thread(() -> {
             final boolean hasRoot = RootShell.checkRootPermission();
@@ -141,9 +123,6 @@ public class MainActivity extends AppCompatActivity implements AppListAdapter.On
         }).start();
     }
 
-    /**
-     * لود کردن لیست اپ‌های نصب‌شده
-     */
     private void loadApps() {
         pbLoading.setVisibility(View.VISIBLE);
         recyclerView.setVisibility(View.GONE);
@@ -166,11 +145,37 @@ public class MainActivity extends AppCompatActivity implements AppListAdapter.On
     }
 
     /**
-     * کلیک روی دکمه‌ی Backup
+     * ⭐ کلیک Backup - با چک هشدار
      */
     @Override
     public void onBackupClick(AppInfo app) {
-        // دیالوگ گرفتن اسم بکاپ (اختیاری)
+        AppWarnings.AppWarning warning = AppWarnings.getWarning(app.getPackageName());
+        
+        if (warning.level == AppWarnings.WarningLevel.CRITICAL) {
+            // اپ‌های CRITICAL: هشدار قوی
+            new AlertDialog.Builder(this)
+                    .setTitle("⚠️ Backup Warning")
+                    .setMessage(warning.message + "\n\nReason: " + warning.reason 
+                            + "\n\nDo you still want to backup?")
+                    .setPositiveButton("Backup Anyway", (dialog, which) -> showBackupDialog(app))
+                    .setNegativeButton("Cancel", null)
+                    .show();
+        } else if (warning.level == AppWarnings.WarningLevel.WARNING 
+                || warning.level == AppWarnings.WarningLevel.INFO) {
+            // اپ‌های WARNING/INFO: هشدار ساده
+            new AlertDialog.Builder(this)
+                    .setTitle("ℹ️ Note")
+                    .setMessage(warning.message + "\n\nProceed with backup?")
+                    .setPositiveButton("Backup", (dialog, which) -> showBackupDialog(app))
+                    .setNegativeButton("Cancel", null)
+                    .show();
+        } else {
+            // اپ‌های عادی: مستقیم
+            showBackupDialog(app);
+        }
+    }
+
+    private void showBackupDialog(AppInfo app) {
         EditText editText = new EditText(this);
         editText.setHint("Backup name (optional)");
         editText.setText(app.getAppName());
@@ -188,24 +193,21 @@ public class MainActivity extends AppCompatActivity implements AppListAdapter.On
     }
 
     /**
-     * کلیک روی دکمه‌ی Restore
+     * ⭐ کلیک Restore - با چک هشدار و گزینه‌های پیشرفته
      */
     @Override
     public void onRestoreClick(AppInfo app) {
-        // پیدا کردن بکاپ‌های این اپ
         List<File> backups = repository.getBackupsForApp(app.getPackageName());
         if (backups.isEmpty()) {
             Toast.makeText(this, "No backups found for this app", Toast.LENGTH_SHORT).show();
             return;
         }
 
-        // اگه فقط یه بکاپ بود، مستقیم برو
         if (backups.size() == 1) {
             confirmRestore(backups.get(0));
             return;
         }
 
-        // اگه چند تا بود، انتخاب بده
         String[] options = new String[backups.size()];
         for (int i = 0; i < backups.size(); i++) {
             BackupMeta meta = repository.readMeta(backups.get(i));
@@ -223,7 +225,7 @@ public class MainActivity extends AppCompatActivity implements AppListAdapter.On
     }
 
     /**
-     * تأیید نهایی ریستور
+     * ⭐ تأیید ریستور با گزینه‌های پیشرفته
      */
     private void confirmRestore(final File backupDir) {
         final BackupMeta meta = repository.readMeta(backupDir);
@@ -232,19 +234,53 @@ public class MainActivity extends AppCompatActivity implements AppListAdapter.On
             return;
         }
 
+        // چک هشدار اپ
+        AppWarnings.AppWarning warning = AppWarnings.getWarning(meta.getPackageName());
+        String warningText = "";
+        if (warning.level != AppWarnings.WarningLevel.NONE) {
+            warningText = "\n\n⚠️ " + warning.message;
+        }
+
+        String[] options = {
+                "🔄 Standard Restore",
+                "👁 Dry Run (Preview only)",
+                "💪 Force Restore (Ignore errors)",
+                "⚡ Quick Restore (Skip verification)"
+        };
+
         new AlertDialog.Builder(this)
-                .setTitle("Restore " + meta.getBackupName())
-                .setMessage("This will replace current app data. Continue?")
-                .setPositiveButton("Restore", (dialog, which) -> {
-                    startRestore(backupDir, meta);
+                .setTitle("Restore: " + meta.getBackupName() + warningText)
+                .setItems(options, (dialog, which) -> {
+                    switch (which) {
+                        case 0:
+                            startRestore(backupDir, meta, false, false, false);
+                            break;
+                        case 1:
+                            startRestore(backupDir, meta, true, false, false);
+                            break;
+                        case 2:
+                            confirmForceRestore(backupDir, meta);
+                            break;
+                        case 3:
+                            startRestore(backupDir, meta, false, false, true);
+                            break;
+                    }
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
     }
 
-    /**
-     * شروع عملیات بکاپ
-     */
+    private void confirmForceRestore(File backupDir, BackupMeta meta) {
+        new AlertDialog.Builder(this)
+                .setTitle("⚠️ Force Restore")
+                .setMessage("Force mode will continue even if errors occur.\n\nThis may leave the app in an inconsistent state.\n\nAre you sure?")
+                .setPositiveButton("Force Restore", (dialog, which) -> {
+                    startRestore(backupDir, meta, false, true, false);
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
     private void startBackup(final AppInfo app, final String name) {
         progressHelper.show("Creating Backup", "Starting...");
 
@@ -258,31 +294,26 @@ public class MainActivity extends AppCompatActivity implements AppListAdapter.On
 
             runOnUiThread(() -> {
                 progressHelper.dismiss();
-                if (result.isSuccess()) {
-                    new AlertDialog.Builder(MainActivity.this)
-                            .setTitle("Backup Successful ✓")
-                            .setMessage(result.getMessage())
-                            .setPositiveButton("OK", null)
-                            .show();
-                } else {
-                    new AlertDialog.Builder(MainActivity.this)
-                            .setTitle("Backup Failed ✗")
-                            .setMessage(result.getMessage())
-                            .setPositiveButton("OK", null)
-                            .show();
-                }
+                showResultDialog(result, "Backup");
             });
         }).start();
     }
 
     /**
-     * شروع عملیات ریستور
+     * ⭐ شروع ریستور با گزینه‌های پیشرفته
      */
-    private void startRestore(final File backupDir, final BackupMeta meta) {
-        progressHelper.show("Restoring Backup", "Starting...");
+    private void startRestore(final File backupDir, final BackupMeta meta,
+                              final boolean dryRun, final boolean forceMode, 
+                              final boolean skipVerify) {
+        String title = dryRun ? "Dry Run" : "Restoring Backup";
+        progressHelper.show(title, "Starting...");
 
         new Thread(() -> {
-            RestoreEngine engine = new RestoreEngine(MainActivity.this);
+            RestoreEngine engine = new RestoreEngine(MainActivity.this)
+                    .setDryRun(dryRun)
+                    .setForceMode(forceMode)
+                    .setSkipVerification(skipVerify);
+                    
             engine.setProgressCallback((message, percent) -> {
                 progressHelper.update(message, percent);
             });
@@ -291,22 +322,31 @@ public class MainActivity extends AppCompatActivity implements AppListAdapter.On
 
             runOnUiThread(() -> {
                 progressHelper.dismiss();
-                if (result.isSuccess()) {
-                    new AlertDialog.Builder(MainActivity.this)
-                            .setTitle("Restore Successful ✓")
-                            .setMessage(result.getMessage())
-                            .setPositiveButton("OK", null)
-                            .show();
-                    // رفرش لیست اپ‌ها
+                showResultDialog(result, dryRun ? "Dry Run" : "Restore");
+                if (result.isSuccess() && !dryRun) {
                     loadApps();
-                } else {
-                    new AlertDialog.Builder(MainActivity.this)
-                            .setTitle("Restore Failed ✗")
-                            .setMessage(result.getMessage())
-                            .setPositiveButton("OK", null)
-                            .show();
                 }
             });
         }).start();
+    }
+
+    /**
+     * نمایش نتیجه با scrollable text
+     */
+    private void showResultDialog(BackupResult result, String operation) {
+        String title = result.isSuccess() ? operation + " Successful ✓" : operation + " Failed ✗";
+        
+        // برای text های طولانی، از TextView توی dialog استفاده می‌کنیم
+        TextView textView = new TextView(this);
+        textView.setText(result.getMessage());
+        textView.setPadding(40, 20, 40, 20);
+        textView.setTextSize(13);
+        textView.setVerticalScrollBarEnabled(true);
+        
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setView(textView)
+                .setPositiveButton("OK", null)
+                .show();
     }
 }
