@@ -1,6 +1,7 @@
 package com.appbackup.pro;
 
 import android.app.AlertDialog;
+import android.content.Intent;
 import android.os.Bundle;
 import android.view.View;
 import android.widget.EditText;
@@ -12,6 +13,7 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.appbackup.pro.core.AppWarnings;
+import com.appbackup.pro.core.AuthManager;
 import com.appbackup.pro.core.BackupRepository;
 import com.appbackup.pro.core.BackupVerifier;
 import com.appbackup.pro.core.MultiUserHelper;
@@ -40,6 +42,16 @@ public class BackupListActivity extends AppCompatActivity implements BackupListA
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        
+        // ⭐ محافظت: اگه login نشده، redirect به MainActivity
+        if (!AuthManager.getInstance(this).isLoggedIn()) {
+            Intent intent = new Intent(this, MainActivity.class);
+            intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+            finish();
+            return;
+        }
+        
         setContentView(R.layout.activity_backup_list);
 
         if (getSupportActionBar() != null) {
@@ -56,7 +68,6 @@ public class BackupListActivity extends AppCompatActivity implements BackupListA
         tvEmpty = findViewById(R.id.tv_empty);
 
         recyclerView.setLayoutManager(new LinearLayoutManager(this));
-
         loadBackups();
     }
 
@@ -70,7 +81,6 @@ public class BackupListActivity extends AppCompatActivity implements BackupListA
         new Thread(() -> {
             final List<File> backups = repository.getAllBackups();
             final long totalSize = repository.getTotalBackupsSize();
-
             runOnUiThread(() -> {
                 if (adapter == null) {
                     adapter = new BackupListAdapter(backups, repository, BackupListActivity.this);
@@ -78,10 +88,8 @@ public class BackupListActivity extends AppCompatActivity implements BackupListA
                 } else {
                     adapter.updateData(backups);
                 }
-
                 tvBackupCount.setText(backups.size() + " backups");
                 tvTotalSize.setText("Total: " + FileUtils.formatSize(totalSize));
-
                 if (backups.isEmpty()) {
                     tvEmpty.setVisibility(View.VISIBLE);
                     recyclerView.setVisibility(View.GONE);
@@ -93,46 +101,21 @@ public class BackupListActivity extends AppCompatActivity implements BackupListA
         }).start();
     }
 
-    /**
-     * ⭐ منوی اصلی Restore
-     */
     @Override
     public void onRestoreClick(final File backupDir, final BackupMeta meta) {
-        AppWarnings.AppWarning warning = AppWarnings.getWarning(meta.getPackageName());
-        String warningText = "";
-        if (warning.level != AppWarnings.WarningLevel.NONE) {
-            warningText = "\n\n⚠️ " + warning.message;
-        }
-
         String[] options = {
-                "🔄 Full Restore",
-                "🎯 Selective Restore...",
-                "👁 Dry Run (Preview)",
-                "🔍 Verify Backup",
-                "⚙️ Advanced Options..."
+                "🔄 Full Restore", "🎯 Selective Restore...", "👁 Dry Run",
+                "🔍 Verify Backup", "⚙️ Advanced Options..."
         };
-
         new AlertDialog.Builder(this)
-                .setTitle(meta.getBackupName() + warningText)
-                .setItems(options, (dialog, which) -> {
+                .setTitle(meta.getBackupName())
+                .setItems(options, (d, which) -> {
                     switch (which) {
-                        case 0:
-                            confirmFullRestore(backupDir, meta);
-                            break;
-                        case 1:
-                            showSelectiveRestoreDialog(backupDir, meta);
-                            break;
-                        case 2:
-                            startRestore(backupDir, meta,
-                                new RestoreOptions(RestoreOptions.RestoreMode.FULL),
-                                true, false, false);
-                            break;
-                        case 3:
-                            verifyBackup(backupDir, meta);
-                            break;
-                        case 4:
-                            showAdvancedOptionsDialog(backupDir, meta);
-                            break;
+                        case 0: confirmFullRestore(backupDir, meta); break;
+                        case 1: showSelectiveRestoreDialog(backupDir, meta); break;
+                        case 2: startRestore(backupDir, meta, new RestoreOptions(RestoreOptions.RestoreMode.FULL), true, false, false); break;
+                        case 3: verifyBackup(backupDir, meta); break;
+                        case 4: showAdvancedOptionsDialog(backupDir, meta); break;
                     }
                 })
                 .setNegativeButton("Cancel", null)
@@ -140,20 +123,11 @@ public class BackupListActivity extends AppCompatActivity implements BackupListA
     }
 
     private void showSelectiveRestoreDialog(final File backupDir, final BackupMeta meta) {
-        String[] options = {
-                "📦 APK Only",
-                "💾 Data Only",
-                "🗄 Databases Only",
-                "⚙️ Shared Prefs Only",
-                "📁 Files Only",
-                "📂 External Data Only",
-                "🎮 OBB Only",
-                "🛠 Custom..."
-        };
-
+        String[] options = {"📦 APK Only", "💾 Data Only", "🗄 Databases", "⚙️ Prefs",
+                "📁 Files", "📂 External Data", "🎮 OBB", "🛠 Custom..."};
         new AlertDialog.Builder(this)
                 .setTitle("Selective Restore")
-                .setItems(options, (dialog, which) -> {
+                .setItems(options, (d, which) -> {
                     RestoreOptions opts;
                     switch (which) {
                         case 0: opts = new RestoreOptions(RestoreOptions.RestoreMode.APK_ONLY); break;
@@ -163,9 +137,7 @@ public class BackupListActivity extends AppCompatActivity implements BackupListA
                         case 4: opts = new RestoreOptions(RestoreOptions.RestoreMode.FILES_ONLY); break;
                         case 5: opts = new RestoreOptions(RestoreOptions.RestoreMode.EXTERNAL_DATA_ONLY); break;
                         case 6: opts = new RestoreOptions(RestoreOptions.RestoreMode.OBB_ONLY); break;
-                        case 7:
-                            showCustomComponentsDialog(backupDir, meta);
-                            return;
+                        case 7: showCustomComponentsDialog(backupDir, meta); return;
                         default: return;
                     }
                     confirmSelectiveRestore(backupDir, meta, opts);
@@ -175,40 +147,17 @@ public class BackupListActivity extends AppCompatActivity implements BackupListA
     }
 
     private void showCustomComponentsDialog(final File backupDir, final BackupMeta meta) {
-        String[] components = {
-                "Install APK",
-                "Internal Data",
-                "Databases",
-                "Shared Preferences",
-                "Files",
-                "DE Data",
-                "External Data",
-                "OBB",
-                "Native Libs",
-                "KeyStore",
-                "Permissions"
-        };
-        
-        boolean[] checked = {
-                meta.hasApk(),
-                meta.hasInternalData(),
-                meta.hasInternalData(),
-                meta.hasInternalData(),
-                meta.hasInternalData(),
-                meta.hasDeviceProtectedData(),
-                meta.hasExternalData(),
-                meta.hasObb(),
-                meta.hasNativeLibs(),
-                meta.hasKeystore(),
-                meta.hasPermissions()
-        };
+        String[] components = {"APK", "Internal Data", "Databases", "Shared Prefs",
+                "Files", "DE Data", "External", "OBB", "Native Libs", "KeyStore", "Permissions"};
+        boolean[] checked = {meta.hasApk(), meta.hasInternalData(), meta.hasInternalData(),
+                meta.hasInternalData(), meta.hasInternalData(), meta.hasDeviceProtectedData(),
+                meta.hasExternalData(), meta.hasObb(), meta.hasNativeLibs(),
+                meta.hasKeystore(), meta.hasPermissions()};
 
         new AlertDialog.Builder(this)
-                .setTitle("Select Components")
-                .setMultiChoiceItems(components, checked, (dialog, which, isChecked) -> {
-                    checked[which] = isChecked;
-                })
-                .setPositiveButton("Restore", (dialog, which) -> {
+                .setTitle("Custom Restore")
+                .setMultiChoiceItems(components, checked, (d, w, isChecked) -> checked[w] = isChecked)
+                .setPositiveButton("Restore", (d, w) -> {
                     RestoreOptions opts = new RestoreOptions(RestoreOptions.RestoreMode.CUSTOM);
                     opts.setRestoreApk(checked[0]);
                     opts.setRestoreInternalData(checked[1]);
@@ -221,7 +170,6 @@ public class BackupListActivity extends AppCompatActivity implements BackupListA
                     opts.setRestoreNativeLibs(checked[8]);
                     opts.setRestoreKeystore(checked[9]);
                     opts.setRestorePermissions(checked[10]);
-                    
                     confirmSelectiveRestore(backupDir, meta, opts);
                 })
                 .setNegativeButton("Cancel", null)
@@ -229,31 +177,15 @@ public class BackupListActivity extends AppCompatActivity implements BackupListA
     }
 
     private void showAdvancedOptionsDialog(final File backupDir, final BackupMeta meta) {
-        String[] options = {
-                "💪 Force Restore",
-                "⚡ Quick Restore (skip verify)",
-                "👥 Restore to specific user...",
-                "🛠 Force + Quick + Custom..."
-        };
-
+        String[] options = {"💪 Force", "⚡ Quick", "👥 To user...", "🛠 Force + Quick + Custom"};
         new AlertDialog.Builder(this)
-                .setTitle("Advanced Options")
-                .setItems(options, (dialog, which) -> {
+                .setTitle("Advanced")
+                .setItems(options, (d, which) -> {
                     switch (which) {
-                        case 0:
-                            confirmForceRestore(backupDir, meta);
-                            break;
-                        case 1:
-                            startRestore(backupDir, meta,
-                                new RestoreOptions(RestoreOptions.RestoreMode.FULL),
-                                false, false, true);
-                            break;
-                        case 2:
-                            showUserSelectionDialog(backupDir, meta);
-                            break;
-                        case 3:
-                            showFullCustomDialog(backupDir, meta);
-                            break;
+                        case 0: confirmForceRestore(backupDir, meta); break;
+                        case 1: startRestore(backupDir, meta, new RestoreOptions(RestoreOptions.RestoreMode.FULL), false, false, true); break;
+                        case 2: showUserSelectionDialog(backupDir, meta); break;
+                        case 3: showFullCustomDialog(backupDir, meta); break;
                     }
                 })
                 .setNegativeButton("Back", null)
@@ -262,31 +194,23 @@ public class BackupListActivity extends AppCompatActivity implements BackupListA
 
     private void showUserSelectionDialog(final File backupDir, final BackupMeta meta) {
         progressHelper.show("Loading users", "Please wait...");
-        
         new Thread(() -> {
             final List<MultiUserHelper.AndroidUser> users = MultiUserHelper.getAllUsers();
-            
             runOnUiThread(() -> {
                 progressHelper.dismiss();
-                
                 if (users.size() <= 1) {
-                    Toast.makeText(this, "Only main user available", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(this, "Only main user", Toast.LENGTH_SHORT).show();
                     confirmFullRestore(backupDir, meta);
                     return;
                 }
-                
                 String[] userNames = new String[users.size()];
                 for (int i = 0; i < users.size(); i++) {
                     MultiUserHelper.AndroidUser u = users.get(i);
-                    String label = "User " + u.userId + ": " + u.userName;
-                    if (u.isMain) label += " (Main)";
-                    if (u.isWorkProfile) label += " (Work)";
-                    userNames[i] = label;
+                    userNames[i] = "User " + u.userId + ": " + u.userName + (u.isMain ? " (Main)" : "");
                 }
-                
                 new AlertDialog.Builder(this)
-                        .setTitle("Restore to which user?")
-                        .setItems(userNames, (dialog, which) -> {
+                        .setTitle("Select user")
+                        .setItems(userNames, (d, which) -> {
                             RestoreOptions opts = new RestoreOptions(RestoreOptions.RestoreMode.FULL);
                             opts.setUserId(users.get(which).userId);
                             startRestore(backupDir, meta, opts, false, false, false);
@@ -298,17 +222,14 @@ public class BackupListActivity extends AppCompatActivity implements BackupListA
     }
 
     private void showFullCustomDialog(final File backupDir, final BackupMeta meta) {
-        String[] modeOptions = {"Standard", "Force", "Quick", "Force + Quick"};
-        final int[] selectedMode = {0};
-        
+        String[] modes = {"Standard", "Force", "Quick", "Force + Quick"};
+        final int[] selected = {0};
         new AlertDialog.Builder(this)
-                .setTitle("Execution mode")
-                .setSingleChoiceItems(modeOptions, 0, (dialog, which) -> {
-                    selectedMode[0] = which;
-                })
-                .setPositiveButton("Next", (dialog, which) -> {
-                    final boolean force = selectedMode[0] == 1 || selectedMode[0] == 3;
-                    final boolean quick = selectedMode[0] == 2 || selectedMode[0] == 3;
+                .setTitle("Mode")
+                .setSingleChoiceItems(modes, 0, (d, w) -> selected[0] = w)
+                .setPositiveButton("Next", (d, w) -> {
+                    boolean force = selected[0] == 1 || selected[0] == 3;
+                    boolean quick = selected[0] == 2 || selected[0] == 3;
                     showCustomForExecution(backupDir, meta, force, quick);
                 })
                 .setNegativeButton("Cancel", null)
@@ -317,24 +238,15 @@ public class BackupListActivity extends AppCompatActivity implements BackupListA
 
     private void showCustomForExecution(final File backupDir, final BackupMeta meta,
                                         final boolean force, final boolean quick) {
-        String[] components = {
-                "APK", "Internal Data", "DE Data", "External Data",
-                "OBB", "Native Libs", "KeyStore", "Permissions"
-        };
-        
-        boolean[] checked = {
-                meta.hasApk(), meta.hasInternalData(),
-                meta.hasDeviceProtectedData(), meta.hasExternalData(),
-                meta.hasObb(), meta.hasNativeLibs(),
-                meta.hasKeystore(), meta.hasPermissions()
-        };
+        String[] components = {"APK", "Internal", "DE", "External", "OBB", "Native", "KeyStore", "Perms"};
+        boolean[] checked = {meta.hasApk(), meta.hasInternalData(), meta.hasDeviceProtectedData(),
+                meta.hasExternalData(), meta.hasObb(), meta.hasNativeLibs(),
+                meta.hasKeystore(), meta.hasPermissions()};
 
         new AlertDialog.Builder(this)
-                .setTitle("Select components")
-                .setMultiChoiceItems(components, checked, (dialog, which, isChecked) -> {
-                    checked[which] = isChecked;
-                })
-                .setPositiveButton("Restore", (dialog, which) -> {
+                .setTitle("Components")
+                .setMultiChoiceItems(components, checked, (d, w, isChecked) -> checked[w] = isChecked)
+                .setPositiveButton("Restore", (d, w) -> {
                     RestoreOptions opts = new RestoreOptions(RestoreOptions.RestoreMode.CUSTOM);
                     opts.setRestoreApk(checked[0]);
                     opts.setRestoreInternalData(checked[1]);
@@ -347,7 +259,6 @@ public class BackupListActivity extends AppCompatActivity implements BackupListA
                     opts.setRestoreNativeLibs(checked[5]);
                     opts.setRestoreKeystore(checked[6]);
                     opts.setRestorePermissions(checked[7]);
-                    
                     startRestore(backupDir, meta, opts, false, force, quick);
                 })
                 .setNegativeButton("Cancel", null)
@@ -357,56 +268,43 @@ public class BackupListActivity extends AppCompatActivity implements BackupListA
     private void confirmFullRestore(final File backupDir, final BackupMeta meta) {
         new AlertDialog.Builder(this)
                 .setTitle("Full Restore")
-                .setMessage("Replace current app data with backup?\n\nApp: " + meta.getPackageName())
-                .setPositiveButton("Restore", (dialog, which) -> {
-                    startRestore(backupDir, meta,
-                        new RestoreOptions(RestoreOptions.RestoreMode.FULL),
-                        false, false, false);
-                })
+                .setMessage("Replace app data?\n\n" + meta.getPackageName())
+                .setPositiveButton("Restore", (d, w) -> startRestore(backupDir, meta,
+                        new RestoreOptions(RestoreOptions.RestoreMode.FULL), false, false, false))
                 .setNegativeButton("Cancel", null)
                 .show();
     }
 
-    private void confirmSelectiveRestore(final File backupDir, final BackupMeta meta,
-                                         final RestoreOptions opts) {
+    private void confirmSelectiveRestore(final File backupDir, final BackupMeta meta, final RestoreOptions opts) {
         new AlertDialog.Builder(this)
-                .setTitle("Confirm Restore")
-                .setMessage("Mode: " + opts.getDescription() + "\n\nContinue?")
-                .setPositiveButton("Restore", (dialog, which) -> {
-                    startRestore(backupDir, meta, opts, false, false, false);
-                })
+                .setTitle("Confirm")
+                .setMessage("Mode: " + opts.getDescription())
+                .setPositiveButton("Restore", (d, w) -> startRestore(backupDir, meta, opts, false, false, false))
                 .setNegativeButton("Cancel", null)
                 .show();
     }
 
     private void confirmForceRestore(File backupDir, BackupMeta meta) {
         new AlertDialog.Builder(this)
-                .setTitle("⚠️ Force Restore")
-                .setMessage("Continue even if errors occur?")
-                .setPositiveButton("Force", (dialog, which) -> {
-                    startRestore(backupDir, meta,
-                        new RestoreOptions(RestoreOptions.RestoreMode.FULL),
-                        false, true, false);
-                })
+                .setTitle("⚠️ Force")
+                .setMessage("Continue with errors?")
+                .setPositiveButton("Force", (d, w) -> startRestore(backupDir, meta,
+                        new RestoreOptions(RestoreOptions.RestoreMode.FULL), false, true, false))
                 .setNegativeButton("Cancel", null)
                 .show();
     }
 
     private void verifyBackup(File backupDir, BackupMeta meta) {
         progressHelper.show("Verifying", "Please wait...");
-        
         new Thread(() -> {
             final BackupVerifier.VerifyResult result = BackupVerifier.verifyBackup(backupDir, meta);
-            
             runOnUiThread(() -> {
                 progressHelper.dismiss();
-                String title = result.success ? "✅ Valid" : "❌ Has Issues";
-                
+                String title = result.success ? "✅ Valid" : "❌ Issues";
                 TextView tv = new TextView(this);
                 tv.setText(result.summary());
                 tv.setPadding(40, 20, 40, 20);
                 tv.setTextSize(13);
-                
                 new AlertDialog.Builder(this)
                         .setTitle(title)
                         .setView(tv)
@@ -419,21 +317,15 @@ public class BackupListActivity extends AppCompatActivity implements BackupListA
     @Override
     public void onDeleteClick(final File backupDir, final BackupMeta meta) {
         new AlertDialog.Builder(this)
-                .setTitle("Delete Backup")
-                .setMessage("Delete \"" + meta.getBackupName() + "\"? Cannot be undone.")
-                .setPositiveButton("Delete", (dialog, which) -> {
-                    new Thread(() -> {
-                        final boolean ok = repository.deleteBackup(backupDir);
-                        runOnUiThread(() -> {
-                            if (ok) {
-                                Toast.makeText(this, "Deleted", Toast.LENGTH_SHORT).show();
-                                loadBackups();
-                            } else {
-                                Toast.makeText(this, "Delete failed", Toast.LENGTH_SHORT).show();
-                            }
-                        });
-                    }).start();
-                })
+                .setTitle("Delete")
+                .setMessage("Delete \"" + meta.getBackupName() + "\"?")
+                .setPositiveButton("Delete", (d, w) -> new Thread(() -> {
+                    final boolean ok = repository.deleteBackup(backupDir);
+                    runOnUiThread(() -> {
+                        Toast.makeText(this, ok ? "Deleted" : "Failed", Toast.LENGTH_SHORT).show();
+                        if (ok) loadBackups();
+                    });
+                }).start())
                 .setNegativeButton("Cancel", null)
                 .show();
     }
@@ -443,66 +335,49 @@ public class BackupListActivity extends AppCompatActivity implements BackupListA
         final EditText editText = new EditText(this);
         editText.setText(meta.getBackupName());
         editText.setSelection(editText.getText().length());
-
         new AlertDialog.Builder(this)
                 .setTitle("Rename")
                 .setView(editText)
-                .setPositiveButton("Rename", (dialog, which) -> {
+                .setPositiveButton("Rename", (d, w) -> {
                     String newName = editText.getText().toString().trim();
                     if (newName.isEmpty()) {
-                        Toast.makeText(this, "Name empty", Toast.LENGTH_SHORT).show();
+                        Toast.makeText(this, "Empty", Toast.LENGTH_SHORT).show();
                         return;
                     }
                     boolean ok = repository.renameBackup(backupDir, newName);
-                    if (ok) {
-                        Toast.makeText(this, "Renamed", Toast.LENGTH_SHORT).show();
-                        loadBackups();
-                    } else {
-                        Toast.makeText(this, "Failed", Toast.LENGTH_SHORT).show();
-                    }
+                    Toast.makeText(this, ok ? "Renamed" : "Failed", Toast.LENGTH_SHORT).show();
+                    if (ok) loadBackups();
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
     }
 
     private void startRestore(final File backupDir, final BackupMeta meta,
-                              final RestoreOptions options,
-                              final boolean dryRun, final boolean forceMode,
-                              final boolean skipVerify) {
-        String title = dryRun ? "Dry Run" : "Restoring";
-        progressHelper.show(title, "Starting...");
-
+                              final RestoreOptions options, final boolean dryRun,
+                              final boolean forceMode, final boolean skipVerify) {
+        progressHelper.show(dryRun ? "Dry Run" : "Restoring", "Starting...");
         new Thread(() -> {
             RestoreEngine engine = new RestoreEngine(BackupListActivity.this)
                     .setOptions(options)
                     .setDryRun(dryRun)
                     .setForceMode(forceMode)
                     .setSkipVerification(skipVerify);
-                    
-            engine.setProgressCallback((message, percent) -> {
-                progressHelper.update(message, percent);
-            });
-
+            engine.setProgressCallback((message, percent) -> progressHelper.update(message, percent));
             final BackupResult result = engine.restore(backupDir, meta);
-
             runOnUiThread(() -> {
                 progressHelper.dismiss();
-                String resultTitle = result.isSuccess() 
-                    ? (dryRun ? "Dry Run Complete ✓" : "Restore Successful ✓")
-                    : (dryRun ? "Dry Run Failed ✗" : "Restore Failed ✗");
-                
+                String title = result.isSuccess() ? "Success ✓" : "Failed ✗";
                 TextView tv = new TextView(this);
                 tv.setText(result.getMessage());
                 tv.setPadding(40, 20, 40, 20);
                 tv.setTextSize(13);
                 tv.setVerticalScrollBarEnabled(true);
-                
                 new AlertDialog.Builder(BackupListActivity.this)
-                        .setTitle(resultTitle)
+                        .setTitle(title)
                         .setView(tv)
                         .setPositiveButton("OK", null)
                         .show();
             });
         }).start();
     }
-                                      }
+}
