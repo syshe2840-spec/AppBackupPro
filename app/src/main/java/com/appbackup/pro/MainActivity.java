@@ -185,7 +185,7 @@ public class MainActivity extends AppCompatActivity implements AppListAdapter.On
         startPeriodicAuthCheck();
     }
     
-    private void startPeriodicAuthCheck() {
+private void startPeriodicAuthCheck() {
         periodicHandler = new Handler(Looper.getMainLooper());
         periodicCheck = new Runnable() {
             @Override
@@ -193,15 +193,17 @@ public class MainActivity extends AppCompatActivity implements AppListAdapter.On
                 authManager.checkAuth(new AuthManager.AuthCallback() {
                     @Override
                     public void onSuccess() {
-                        Log.d("AppBackupPro_AUTH", "Periodic check OK");
+                        Log.d("AppBackupPro_AUTH", "Periodic check OK (failures: 0)");
                     }
                     
                     @Override
                     public void onFailure(final String error) {
                         runOnUiThread(() -> {
                             new AlertDialog.Builder(MainActivity.this)
-                                .setTitle("Session Expired")
-                                .setMessage("Your session has expired.\n\nReason: " + error)
+                                .setTitle("⚠️ Session Expired")
+                                .setMessage("Your session has expired.\n\n"
+                                    + "Reason: " + error + "\n\n"
+                                    + "Please re-activate to continue using the app.")
                                 .setCancelable(false)
                                 .setPositiveButton("Re-activate", (d, w) -> {
                                     authManager.logout();
@@ -213,6 +215,7 @@ public class MainActivity extends AppCompatActivity implements AppListAdapter.On
                     }
                 });
                 
+                // دوباره ۱۵ دقیقه‌ی بعد
                 periodicHandler.postDelayed(this, 15 * 60 * 1000);
             }
         };
@@ -593,40 +596,82 @@ public class MainActivity extends AppCompatActivity implements AppListAdapter.On
     }
 
     private void startBackup(final AppInfo app, final String name) {
-        progressHelper.show("Creating Backup", "Starting...");
+        // ⭐ چک auth قبل از backup
+        progressHelper.show("Verifying access", "Please wait...");
         new Thread(() -> {
+            final boolean authValid = authManager.isAuthValidNow();
+            
+            if (!authValid) {
+                runOnUiThread(() -> {
+                    progressHelper.dismiss();
+                    showAuthFailDialog("Cannot start backup");
+                });
+                return;
+            }
+            
+            runOnUiThread(() -> progressHelper.show("Creating Backup", "Starting..."));
+            
             BackupEngine engine = new BackupEngine(MainActivity.this);
-            engine.setProgressCallback((message, percent) -> progressHelper.update(message, percent));
-            final BackupResult result = engine.backup(app, name);
-            runOnUiThread(() -> {
-                progressHelper.dismiss();
-                showResultDialog(result, "Backup");
-            });
-        }).start();
-    }
 
     private void startRestore(final File backupDir, final BackupMeta meta,
                               final RestoreOptions options,
                               final boolean dryRun, final boolean forceMode, 
                               final boolean skipVerify) {
-        String title = dryRun ? "Dry Run" : "Restoring";
-        progressHelper.show(title, "Starting...");
-
+        // ⭐ چک auth قبل از restore (به جز dryRun که خطری نداره)
+        if (!dryRun) {
+            progressHelper.show("Verifying access", "Please wait...");
+            new Thread(() -> {
+                final boolean authValid = authManager.isAuthValidNow();
+                
+                if (!authValid) {
+                    runOnUiThread(() -> {
+                        progressHelper.dismiss();
+                        showAuthFailDialog("Cannot start restore");
+                    });
+                    return;
+                }
+                
+                runOnUiThread(() -> progressHelper.show("Restoring", "Starting..."));
+                doActualRestore(backupDir, meta, options, false, forceMode, skipVerify);
+            }).start();
+            return;
+        }
+        
+        // Dry run - بدون چک auth
+        progressHelper.show("Dry Run", "Starting...");
+        doActualRestore(backupDir, meta, options, true, forceMode, skipVerify);
+    }
+            /**
+     * ⭐ Dialog قوی برای auth failure
+     */
+    private void showAuthFailDialog(String context) {
+        String message = context + ".\n\n" 
+            + "Could not verify your license. This could be because:\n\n"
+            + "• No internet connection\n"
+            + "• Server is down\n"
+            + "• License has been deactivated\n"
+            + "• Session expired\n\n"
+            + "Please check your connection and try again.";
+        
+        new AlertDialog.Builder(this)
+                .setTitle("⚠️ Authentication Failed")
+                .setMessage(message)
+                .setCancelable(false)
+                .setPositiveButton("Retry", (d, w) -> recreate())
+                .setNegativeButton("Re-activate", (d, w) -> {
+                    authManager.logout();
+                    recreate();
+                })
+                .setNeutralButton("Exit", (d, w) -> finish())
+                .show();
+    }
+    
+    private void doActualRestore(final File backupDir, final BackupMeta meta,
+                                  final RestoreOptions options,
+                                  final boolean dryRun, final boolean forceMode,
+                                  final boolean skipVerify) {
         new Thread(() -> {
             RestoreEngine engine = new RestoreEngine(MainActivity.this)
-                    .setOptions(options)
-                    .setDryRun(dryRun)
-                    .setForceMode(forceMode)
-                    .setSkipVerification(skipVerify);
-            engine.setProgressCallback((message, percent) -> progressHelper.update(message, percent));
-            final BackupResult result = engine.restore(backupDir, meta);
-            runOnUiThread(() -> {
-                progressHelper.dismiss();
-                showResultDialog(result, dryRun ? "Dry Run" : "Restore");
-                if (result.isSuccess() && !dryRun) loadApps();
-            });
-        }).start();
-    }
 
     private void showResultDialog(BackupResult result, String operation) {
         String title = result.isSuccess() ? operation + " ✓" : operation + " ✗";
