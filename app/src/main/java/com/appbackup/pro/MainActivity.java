@@ -185,7 +185,7 @@ public class MainActivity extends AppCompatActivity implements AppListAdapter.On
         startPeriodicAuthCheck();
     }
     
-private void startPeriodicAuthCheck() {
+ private void startPeriodicAuthCheck() {
         periodicHandler = new Handler(Looper.getMainLooper());
         periodicCheck = new Runnable() {
             @Override
@@ -595,7 +595,7 @@ private void startPeriodicAuthCheck() {
         }).start();
     }
 
-    private void startBackup(final AppInfo app, final String name) {
+   private void startBackup(final AppInfo app, final String name) {
         // ⭐ چک auth قبل از backup
         progressHelper.show("Verifying access", "Please wait...");
         new Thread(() -> {
@@ -612,8 +612,16 @@ private void startPeriodicAuthCheck() {
             runOnUiThread(() -> progressHelper.show("Creating Backup", "Starting..."));
             
             BackupEngine engine = new BackupEngine(MainActivity.this);
+            engine.setProgressCallback((message, percent) -> progressHelper.update(message, percent));
+            final BackupResult result = engine.backup(app, name);
+            runOnUiThread(() -> {
+                progressHelper.dismiss();
+                showResultDialog(result, "Backup");
+            });
+        }).start();
+    }
 
-    private void startRestore(final File backupDir, final BackupMeta meta,
+  private void startRestore(final File backupDir, final BackupMeta meta,
                               final RestoreOptions options,
                               final boolean dryRun, final boolean forceMode, 
                               final boolean skipVerify) {
@@ -641,7 +649,27 @@ private void startPeriodicAuthCheck() {
         progressHelper.show("Dry Run", "Starting...");
         doActualRestore(backupDir, meta, options, true, forceMode, skipVerify);
     }
-            /**
+    
+    private void doActualRestore(final File backupDir, final BackupMeta meta,
+                                  final RestoreOptions options,
+                                  final boolean dryRun, final boolean forceMode,
+                                  final boolean skipVerify) {
+        new Thread(() -> {
+            RestoreEngine engine = new RestoreEngine(MainActivity.this)
+                    .setOptions(options)
+                    .setDryRun(dryRun)
+                    .setForceMode(forceMode)
+                    .setSkipVerification(skipVerify);
+            engine.setProgressCallback((message, percent) -> progressHelper.update(message, percent));
+            final BackupResult result = engine.restore(backupDir, meta);
+            runOnUiThread(() -> {
+                progressHelper.dismiss();
+                showResultDialog(result, dryRun ? "Dry Run" : "Restore");
+                if (result.isSuccess() && !dryRun) loadApps();
+            });
+        }).start();
+    }
+/**
      * ⭐ Dialog قوی برای auth failure
      */
     private void showAuthFailDialog(String context) {
@@ -665,14 +693,6 @@ private void startPeriodicAuthCheck() {
                 .setNeutralButton("Exit", (d, w) -> finish())
                 .show();
     }
-    
-    private void doActualRestore(final File backupDir, final BackupMeta meta,
-                                  final RestoreOptions options,
-                                  final boolean dryRun, final boolean forceMode,
-                                  final boolean skipVerify) {
-        new Thread(() -> {
-            RestoreEngine engine = new RestoreEngine(MainActivity.this)
-
     private void showResultDialog(BackupResult result, String operation) {
         String title = result.isSuccess() ? operation + " ✓" : operation + " ✗";
         TextView tv = new TextView(this);
