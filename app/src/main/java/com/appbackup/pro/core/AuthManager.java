@@ -26,7 +26,7 @@ public class AuthManager {
     private static final String TAG = "AppBackupPro_AUTH";
     
     // ⚠️ ⚠️ ⚠️ این دو خط رو با مقادیر خودت عوض کن ⚠️ ⚠️ ⚠️
-    private static final String SERVER_URL = "https://apppro.lastofanarchy.workers.dev/";
+    private static final String SERVER_URL = "https://apppro.lastofanarchy.workers.dev";
     private static final String AES_KEY_HEX = "98604998169f24a050863d87af78d23fdec2b4fb1bdf51b60fb0bd890f9701be";
     
     private static final String PREFS_NAME = "auth_prefs_v1";
