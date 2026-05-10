@@ -2,6 +2,7 @@ package com.appbackup.pro.core;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.os.Build;
 import android.provider.Settings;
 import android.util.Base64;
 import android.util.Log;
@@ -18,27 +19,23 @@ import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
 /**
- * مدیریت احراز هویت با Cloudflare Worker
- * - رمزگذاری AES-GCM برای request/response
- * - HMAC signature برای token integrity
- * - Periodic check هر ۱۵ دقیقه
+ * مدیریت احراز هویت با Cloudflare Worker + D1
+ * AES-GCM + HMAC + Periodic check + Device binding
  */
 public class AuthManager {
     private static final String TAG = "AppBackupPro_AUTH";
     
-    // ⭐ تنظیمات سرور (اینا رو با مال خودت عوض کن)
-    private static final String SERVER_URL = "https://appbackup-auth.YOUR-USERNAME.workers.dev";
+    // ⚠️ ⚠️ ⚠️ این دو خط رو با مقادیر خودت عوض کن ⚠️ ⚠️ ⚠️
+    private static final String SERVER_URL = "https://apppro.lastofanarchy.workers.dev/";
+    private static final String AES_KEY_HEX = "98604998169f24a050863d87af78d23fdec2b4fb1bdf51b60fb0bd890f9701be";
     
-    // ⭐ کلید AES - باید دقیقاً مثل سرور باشه (32 byte = 64 hex char)
-    private static final String AES_KEY_HEX = "8f3a9b2c5e7d1f4a6b8c0e2d5f7a9b1c3e5d7f9a2b4c6e8d0f1a3b5c7d9e1f3a";
-    
-    private static final String PREFS_NAME = "auth_prefs";
+    private static final String PREFS_NAME = "auth_prefs_v1";
     private static final String KEY_LICENSE = "license_key";
     private static final String KEY_TOKEN_PAYLOAD = "token_payload";
     private static final String KEY_TOKEN_SIG = "token_sig";
     private static final String KEY_LAST_CHECK = "last_check";
     
-    private static final long CHECK_INTERVAL_MS = 15 * 60 * 1000; // ۱۵ دقیقه
+    private static final long CHECK_INTERVAL_MS = 15 * 60 * 1000;
     
     private static AuthManager instance;
     private final Context context;
@@ -62,30 +59,19 @@ public class AuthManager {
         return instance;
     }
     
-    // ─────────────────────────────────────
-    // Public API
-    // ─────────────────────────────────────
-    
     /**
-     * چک می‌کنه آیا کاربر login شده و token معتبره
+     * چک می‌کنه آیا کاربر login شده و token محلی هنوز معتبره
      */
     public boolean isLoggedIn() {
         String license = prefs.getString(KEY_LICENSE, null);
         String tokenPayload = prefs.getString(KEY_TOKEN_PAYLOAD, null);
         
-        if (license == null || tokenPayload == null) {
-            return false;
-        }
+        if (license == null || tokenPayload == null) return false;
         
-        // چک expiration توی token
         try {
             JSONObject payload = new JSONObject(tokenPayload);
             long expires = payload.optLong("expires", 0);
-            if (System.currentTimeMillis() > expires) {
-                Log.d(TAG, "Token expired locally");
-                return false;
-            }
-            return true;
+            return System.currentTimeMillis() < expires;
         } catch (Exception e) {
             return false;
         }
@@ -97,11 +83,13 @@ public class AuthManager {
     public void login(final String licenseKey, final AuthCallback callback) {
         new Thread(() -> {
             try {
-                String deviceId = getDeviceId();
-                
                 JSONObject reqData = new JSONObject();
                 reqData.put("license", licenseKey);
-                reqData.put("device", deviceId);
+                reqData.put("android_id", getAndroidId());
+                reqData.put("device_model", Build.MODEL);
+                reqData.put("device_manufacturer", Build.MANUFACTURER);
+                reqData.put("android_version", "Android " + Build.VERSION.RELEASE 
+                    + " (SDK " + Build.VERSION.SDK_INT + ")");
                 reqData.put("timestamp", System.currentTimeMillis());
                 
                 String encrypted = aesEncrypt(reqData.toString());
@@ -111,16 +99,26 @@ public class AuthManager {
                 
                 String response = httpPost(SERVER_URL + "/verify", reqBody.toString());
                 if (response == null) {
-                    callback.onFailure("Cannot connect to server");
+                    callback.onFailure("Cannot connect to server. Check internet.");
                     return;
                 }
                 
                 JSONObject respJson = new JSONObject(response);
-                String encryptedResp = respJson.getString("data");
+                
+                if (respJson.has("error")) {
+                    callback.onFailure(respJson.getString("error"));
+                    return;
+                }
+                
+                String encryptedResp = respJson.optString("data", null);
+                if (encryptedResp == null) {
+                    callback.onFailure("Invalid server response");
+                    return;
+                }
                 
                 String decryptedResp = aesDecrypt(encryptedResp);
                 if (decryptedResp == null) {
-                    callback.onFailure("Invalid server response");
+                    callback.onFailure("Cannot decrypt response");
                     return;
                 }
                 
@@ -130,7 +128,6 @@ public class AuthManager {
                     return;
                 }
                 
-                // ذخیره‌ی token
                 JSONObject token = data.getJSONObject("token");
                 prefs.edit()
                     .putString(KEY_LICENSE, licenseKey)
@@ -150,13 +147,10 @@ public class AuthManager {
     }
     
     /**
-     * Periodic check - هر ۱۵ دقیقه صدا زده میشه
+     * Periodic check - هر ۱۵ دقیقه
      */
     public void checkAuth(final AuthCallback callback) {
-        if (!isChecking.compareAndSet(false, true)) {
-            // یه چک دیگه در حال اجراست
-            return;
-        }
+        if (!isChecking.compareAndSet(false, true)) return;
         
         new Thread(() -> {
             try {
@@ -176,7 +170,8 @@ public class AuthManager {
                 JSONObject reqData = new JSONObject();
                 reqData.put("token", token);
                 reqData.put("license", license);
-                reqData.put("device", getDeviceId());
+                reqData.put("android_id", getAndroidId());
+                reqData.put("device_model", Build.MODEL);
                 
                 String encrypted = aesEncrypt(reqData.toString());
                 
@@ -185,7 +180,7 @@ public class AuthManager {
                 
                 String response = httpPost(SERVER_URL + "/check", reqBody.toString());
                 if (response == null) {
-                    // اگه اینترنت قطعه، token محلی رو بپذیر اگه expire نشده
+                    // اینترنت قطعه - token محلی رو بپذیر اگه valid باشه
                     if (isLoggedIn()) {
                         Log.w(TAG, "Network down, using local token");
                         callback.onSuccess();
@@ -196,6 +191,12 @@ public class AuthManager {
                 }
                 
                 JSONObject respJson = new JSONObject(response);
+                
+                if (respJson.has("error")) {
+                    callback.onFailure(respJson.getString("error"));
+                    return;
+                }
+                
                 String decryptedResp = aesDecrypt(respJson.getString("data"));
                 if (decryptedResp == null) {
                     callback.onFailure("Invalid response");
@@ -204,7 +205,6 @@ public class AuthManager {
                 
                 JSONObject data = new JSONObject(decryptedResp);
                 if (!data.optBoolean("ok", false)) {
-                    // license revoked → logout
                     Log.w(TAG, "Auth check failed: " + data.optString("error"));
                     logout();
                     callback.onFailure(data.optString("error", "Auth failed"));
@@ -224,9 +224,6 @@ public class AuthManager {
         }).start();
     }
     
-    /**
-     * چک می‌کنه آیا زمان چک periodic رسیده
-     */
     public boolean shouldCheck() {
         long lastCheck = prefs.getLong(KEY_LAST_CHECK, 0);
         return System.currentTimeMillis() - lastCheck > CHECK_INTERVAL_MS;
@@ -237,9 +234,11 @@ public class AuthManager {
         Log.d(TAG, "Logged out");
     }
     
-    // ─────────────────────────────────────
-    // AES Encryption
-    // ─────────────────────────────────────
+    public String getCurrentLicense() {
+        return prefs.getString(KEY_LICENSE, null);
+    }
+    
+    // ─── AES-GCM Encryption ───
     
     private String aesEncrypt(String plaintext) throws Exception {
         byte[] keyBytes = hexToBytes(AES_KEY_HEX);
@@ -254,7 +253,6 @@ public class AuthManager {
         
         byte[] ciphertext = cipher.doFinal(plaintext.getBytes("UTF-8"));
         
-        // فرمت: base64(iv) + ":" + base64(ciphertext)
         return Base64.encodeToString(iv, Base64.NO_WRAP) + ":" 
              + Base64.encodeToString(ciphertext, Base64.NO_WRAP);
     }
@@ -290,9 +288,7 @@ public class AuthManager {
         return bytes;
     }
     
-    // ─────────────────────────────────────
-    // HTTP & Device
-    // ─────────────────────────────────────
+    // ─── HTTP & Device ───
     
     private String httpPost(String urlStr, String body) {
         HttpURLConnection conn = null;
@@ -310,13 +306,15 @@ public class AuthManager {
             conn.getOutputStream().write(bodyBytes);
             
             int code = conn.getResponseCode();
-            if (code != 200) {
-                Log.w(TAG, "HTTP " + code);
-                return null;
-            }
+            
+            java.io.InputStream is = (code == 200) 
+                ? conn.getInputStream() 
+                : conn.getErrorStream();
+            
+            if (is == null) return null;
             
             java.io.BufferedReader reader = new java.io.BufferedReader(
-                new java.io.InputStreamReader(conn.getInputStream(), "UTF-8"));
+                new java.io.InputStreamReader(is, "UTF-8"));
             StringBuilder sb = new StringBuilder();
             String line;
             while ((line = reader.readLine()) != null) sb.append(line);
@@ -332,9 +330,10 @@ public class AuthManager {
     }
     
     @SuppressWarnings("HardwareIds")
-    private String getDeviceId() {
+    private String getAndroidId() {
         try {
-            return Settings.Secure.getString(context.getContentResolver(), Settings.Secure.ANDROID_ID);
+            String id = Settings.Secure.getString(context.getContentResolver(), Settings.Secure.ANDROID_ID);
+            return id != null ? id : "unknown";
         } catch (Exception e) {
             return "unknown";
         }
