@@ -44,7 +44,17 @@ public class BackupListActivity extends AppCompatActivity implements BackupListA
         super.onCreate(savedInstanceState);
         
         // ⭐ محافظت: اگه login نشده، redirect به MainActivity
-        if (!AuthManager.getInstance(this).isLoggedIn()) {
+   AuthManager auth = AuthManager.getInstance(this);
+        
+        // ⭐ چک اینترنت
+        if (!auth.hasInternet()) {
+            Toast.makeText(this, "No internet connection", Toast.LENGTH_LONG).show();
+            finish();
+            return;
+        }
+        
+        // ⭐ محافظت: اگه login نشده، redirect
+        if (!auth.hasStoredLicense()) {
             Intent intent = new Intent(this, MainActivity.class);
             intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_NEW_TASK);
             startActivity(intent);
@@ -352,10 +362,60 @@ public class BackupListActivity extends AppCompatActivity implements BackupListA
                 .show();
     }
 
-    private void startRestore(final File backupDir, final BackupMeta meta,
+   private void startRestore(final File backupDir, final BackupMeta meta,
                               final RestoreOptions options, final boolean dryRun,
                               final boolean forceMode, final boolean skipVerify) {
-        progressHelper.show(dryRun ? "Dry Run" : "Restoring", "Starting...");
+        // ⭐ Dry Run خطری نداره
+        if (dryRun) {
+            progressHelper.show("Dry Run", "Starting...");
+            doActualRestore(backupDir, meta, options, true, forceMode, skipVerify);
+            return;
+        }
+        
+        AuthManager auth = AuthManager.getInstance(this);
+        
+        // ⭐ چک اینترنت
+        if (!auth.hasInternet()) {
+            new AlertDialog.Builder(this)
+                .setTitle("📡 No Internet")
+                .setMessage("Cannot restore. Internet required.")
+                .setPositiveButton("OK", null)
+                .show();
+            return;
+        }
+        
+        // ⭐ چک online با سرور
+        progressHelper.show("Verifying access", "Checking license...");
+        new Thread(() -> {
+            final boolean ok = auth.verifyOnlineSync();
+            
+            if (!ok) {
+                runOnUiThread(() -> {
+                    progressHelper.dismiss();
+                    new AlertDialog.Builder(this)
+                        .setTitle("⚠️ Authentication Failed")
+                        .setMessage("Cannot start restore. License verification failed.")
+                        .setPositiveButton("Back to Login", (d, w) -> {
+                            auth.logout();
+                            Intent i = new Intent(this, MainActivity.class);
+                            i.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_NEW_TASK);
+                            startActivity(i);
+                            finish();
+                        })
+                        .setNegativeButton("Cancel", null)
+                        .show();
+                });
+                return;
+            }
+            
+            runOnUiThread(() -> progressHelper.show("Restoring", "Starting..."));
+            doActualRestore(backupDir, meta, options, false, forceMode, skipVerify);
+        }).start();
+    }
+    
+    private void doActualRestore(final File backupDir, final BackupMeta meta,
+                                  final RestoreOptions options, final boolean dryRun,
+                                  final boolean forceMode, final boolean skipVerify) {
         new Thread(() -> {
             RestoreEngine engine = new RestoreEngine(BackupListActivity.this)
                     .setOptions(options)
