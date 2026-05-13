@@ -1,7 +1,9 @@
 package com.appbackup.pro.core;
 
 import android.content.Context;
-import android.content.SharedPreferences;
+import android.net.ConnectivityManager;
+import android.net.NetworkCapabilities;
+import android.net.NetworkInfo;
 import android.os.Build;
 import android.provider.Settings;
 import android.util.Base64;
@@ -13,12 +15,18 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.security.SecureRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.crypto.Cipher;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
+/**
+ * نسخه‌ی نهایی - فول قوی
+ * - چک سرور برای هر عملیات حیاتی (login, backup, restore)
+ * - بدون اینترنت → کاملاً disabled
+ * - ذخیره‌سازی امن با EncryptedSharedPreferences
+ * - چک periodic هر ۱۵ دقیقه
+ */
 public class AuthManager {
     private static final String TAG = "AppBackupPro_AUTH";
     
@@ -26,22 +34,17 @@ public class AuthManager {
     private static final String SERVER_URL = "https://apppro.lastofanarchy.workers.dev";
     private static final String AES_KEY_HEX = "98604998169f24a050863d87af78d23fdec2b4fb1bdf51b60fb0bd890f9701be";
     
-    private static final String PREFS_NAME = "auth_prefs_v1";
     private static final String KEY_LICENSE = "license_key";
     private static final String KEY_TOKEN_PAYLOAD = "token_payload";
     private static final String KEY_TOKEN_SIG = "token_sig";
     private static final String KEY_LAST_CHECK = "last_check";
-    private static final String KEY_LAST_SUCCESS = "last_success";
     
     private static final long CHECK_INTERVAL_MS = 15 * 60 * 1000; // ۱۵ دقیقه
-    private static final long MAX_OFFLINE_MS = 60 * 60 * 1000;    // حداکثر ۱ ساعت offline
-    private static final int MAX_FAILURES = 3;                    // ۳ خطای پشت سر هم → logout
     
     private static AuthManager instance;
     private final Context context;
-    private final SharedPreferences prefs;
+    private final SecureStorage storage;
     private final AtomicBoolean isChecking = new AtomicBoolean(false);
-    private final AtomicInteger consecutiveFailures = new AtomicInteger(0);
     
     public interface AuthCallback {
         void onSuccess();
@@ -50,7 +53,7 @@ public class AuthManager {
     
     private AuthManager(Context context) {
         this.context = context.getApplicationContext();
-        this.prefs = this.context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        this.storage = SecureStorage.getInstance(this.context);
     }
     
     public static synchronized AuthManager getInstance(Context context) {
@@ -60,40 +63,62 @@ public class AuthManager {
         return instance;
     }
     
-    public boolean isLoggedIn() {
-        String license = prefs.getString(KEY_LICENSE, null);
-        String tokenPayload = prefs.getString(KEY_TOKEN_PAYLOAD, null);
-        if (license == null || tokenPayload == null) return false;
-        
+    /**
+     * ⭐ چک کردن اینترنت
+     */
+    public boolean hasInternet() {
         try {
-            JSONObject payload = new JSONObject(tokenPayload);
-            long expires = payload.optLong("expires", 0);
-            return System.currentTimeMillis() < expires;
+            ConnectivityManager cm = (ConnectivityManager) 
+                context.getSystemService(Context.CONNECTIVITY_SERVICE);
+            
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                android.net.Network network = cm.getActiveNetwork();
+                if (network == null) return false;
+                NetworkCapabilities caps = cm.getNetworkCapabilities(network);
+                return caps != null && (
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ||
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+                );
+            } else {
+                NetworkInfo info = cm.getActiveNetworkInfo();
+                return info != null && info.isConnected();
+            }
         } catch (Exception e) {
             return false;
         }
     }
     
     /**
-     * ⭐ چک سریع - برای استفاده قبل از backup/restore
-     * synchronous - منتظر می‌مونه و bool برمی‌گردونه
+     * چک license محلی (فقط format)
      */
-    public boolean isAuthValidNow() {
-        // اگه token محلی expire شده، حتماً false
-        if (!isLoggedIn()) return false;
-        
-        // اگه آخرین چک موفق کمتر از ۵ دقیقه پیش بود، بدون نیاز به سرور OK
-        long lastSuccess = prefs.getLong(KEY_LAST_SUCCESS, 0);
-        if (System.currentTimeMillis() - lastSuccess < 5 * 60 * 1000) {
-            return true;
+    public boolean hasStoredLicense() {
+        return storage.contains(KEY_LICENSE) && storage.contains(KEY_TOKEN_PAYLOAD);
+    }
+    
+    /**
+     * ⭐ چک online - برای استفاده در هر عملیات حیاتی
+     * این متد sync است و باید توی thread جدا صدا زده بشه
+     * @return true فقط اگه سرور تأیید کرد
+     */
+    public boolean verifyOnlineSync() {
+        // ⭐ بدون اینترنت → false
+        if (!hasInternet()) {
+            Log.w(TAG, "No internet - verification failed");
+            return false;
         }
         
-        // یه چک سریع از سرور (synchronous)
+        // اگه license نداره، false
+        if (!hasStoredLicense()) {
+            return false;
+        }
+        
+        // sync check
         final boolean[] result = {false};
         final Object lock = new Object();
         
         Thread t = new Thread(() -> {
-            checkAuthSync(new AuthCallback() {
+            performCheck(new AuthCallback() {
                 @Override
                 public void onSuccess() {
                     synchronized (lock) {
@@ -104,6 +129,7 @@ public class AuthManager {
                 
                 @Override
                 public void onFailure(String error) {
+                    Log.w(TAG, "Sync verify failed: " + error);
                     synchronized (lock) {
                         result[0] = false;
                         lock.notify();
@@ -115,14 +141,23 @@ public class AuthManager {
         
         try {
             synchronized (lock) {
-                lock.wait(15000); // حداکثر ۱۵ ثانیه صبر
+                lock.wait(20000); // حداکثر ۲۰ ثانیه
             }
         } catch (InterruptedException e) {}
         
         return result[0];
     }
     
+    /**
+     * Login - فقط اگه اینترنت داشته باشیم
+     */
     public void login(final String licenseKey, final AuthCallback callback) {
+        // ⭐ بدون اینترنت → خطا
+        if (!hasInternet()) {
+            callback.onFailure("No internet connection. Internet required to activate.");
+            return;
+        }
+        
         new Thread(() -> {
             try {
                 JSONObject reqData = new JSONObject();
@@ -140,7 +175,7 @@ public class AuthManager {
                 
                 String response = httpPost(SERVER_URL + "/verify", reqBody.toString());
                 if (response == null) {
-                    callback.onFailure("Cannot connect to server. Check internet.");
+                    callback.onFailure("Cannot connect to server");
                     return;
                 }
                 
@@ -169,16 +204,11 @@ public class AuthManager {
                 }
                 
                 JSONObject token = data.getJSONObject("token");
-                long now = System.currentTimeMillis();
-                prefs.edit()
-                    .putString(KEY_LICENSE, licenseKey)
-                    .putString(KEY_TOKEN_PAYLOAD, token.getString("payload"))
-                    .putString(KEY_TOKEN_SIG, token.getString("signature"))
-                    .putLong(KEY_LAST_CHECK, now)
-                    .putLong(KEY_LAST_SUCCESS, now)
-                    .apply();
+                storage.putString(KEY_LICENSE, licenseKey);
+                storage.putString(KEY_TOKEN_PAYLOAD, token.getString("payload"));
+                storage.putString(KEY_TOKEN_SIG, token.getString("signature"));
+                storage.putLong(KEY_LAST_CHECK, System.currentTimeMillis());
                 
-                consecutiveFailures.set(0);
                 Log.d(TAG, "✓ Login successful");
                 callback.onSuccess();
                 
@@ -189,11 +219,18 @@ public class AuthManager {
         }).start();
     }
     
+    /**
+     * Periodic check (async)
+     */
     public void checkAuth(final AuthCallback callback) {
         if (!isChecking.compareAndSet(false, true)) return;
         new Thread(() -> {
             try {
-                checkAuthSync(callback);
+                if (!hasInternet()) {
+                    callback.onFailure("No internet connection");
+                    return;
+                }
+                performCheck(callback);
             } finally {
                 isChecking.set(false);
             }
@@ -201,13 +238,13 @@ public class AuthManager {
     }
     
     /**
-     * ⭐ چک sync با retry logic و failure counting
+     * منطق اصلی چک با سرور
      */
-    private void checkAuthSync(AuthCallback callback) {
+    private void performCheck(AuthCallback callback) {
         try {
-            String license = prefs.getString(KEY_LICENSE, null);
-            String tokenPayload = prefs.getString(KEY_TOKEN_PAYLOAD, null);
-            String tokenSig = prefs.getString(KEY_TOKEN_SIG, null);
+            String license = storage.getString(KEY_LICENSE, null);
+            String tokenPayload = storage.getString(KEY_TOKEN_PAYLOAD, null);
+            String tokenSig = storage.getString(KEY_TOKEN_SIG, null);
             
             if (license == null || tokenPayload == null) {
                 callback.onFailure("Not logged in");
@@ -229,25 +266,8 @@ public class AuthManager {
             reqBody.put("data", encrypted);
             
             String response = httpPost(SERVER_URL + "/check", reqBody.toString());
-            
             if (response == null) {
-                // ⭐ Network error
-                int failures = consecutiveFailures.incrementAndGet();
-                Log.w(TAG, "Network failure #" + failures);
-                
-                long lastSuccess = prefs.getLong(KEY_LAST_SUCCESS, 0);
-                long timeSinceSuccess = System.currentTimeMillis() - lastSuccess;
-                
-                // اگه ۳ بار پشت سر هم خطا داده یا بیشتر از ۱ ساعت offline
-                if (failures >= MAX_FAILURES || timeSinceSuccess > MAX_OFFLINE_MS) {
-                    Log.w(TAG, "Too many failures or offline too long → logout");
-                    logout();
-                    callback.onFailure("Cannot reach server. Please check internet and re-activate.");
-                    return;
-                }
-                
-                // وگرنه با token محلی ادامه میدیم
-                callback.onSuccess();
+                callback.onFailure("Server unreachable");
                 return;
             }
             
@@ -266,19 +286,12 @@ public class AuthManager {
             JSONObject data = new JSONObject(decryptedResp);
             if (!data.optBoolean("ok", false)) {
                 String err = data.optString("error", "Auth failed");
-                Log.w(TAG, "Auth check failed: " + err);
                 logout();
                 callback.onFailure(err);
                 return;
             }
             
-            // موفق
-            consecutiveFailures.set(0);
-            long now = System.currentTimeMillis();
-            prefs.edit()
-                .putLong(KEY_LAST_CHECK, now)
-                .putLong(KEY_LAST_SUCCESS, now)
-                .apply();
+            storage.putLong(KEY_LAST_CHECK, System.currentTimeMillis());
             Log.d(TAG, "✓ Auth check passed");
             callback.onSuccess();
             
@@ -289,22 +302,17 @@ public class AuthManager {
     }
     
     public boolean shouldCheck() {
-        long lastCheck = prefs.getLong(KEY_LAST_CHECK, 0);
+        long lastCheck = storage.getLong(KEY_LAST_CHECK, 0);
         return System.currentTimeMillis() - lastCheck > CHECK_INTERVAL_MS;
     }
     
     public void logout() {
-        prefs.edit().clear().apply();
-        consecutiveFailures.set(0);
+        storage.clear();
         Log.d(TAG, "Logged out");
     }
     
     public String getCurrentLicense() {
-        return prefs.getString(KEY_LICENSE, null);
-    }
-    
-    public int getFailureCount() {
-        return consecutiveFailures.get();
+        return storage.getString(KEY_LICENSE, null);
     }
     
     // ─── AES-GCM ───
