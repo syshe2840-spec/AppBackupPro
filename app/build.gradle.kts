@@ -39,7 +39,7 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     implementation("com.google.android.material:material:1.9.0")
-    
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
     // ⬇️⬇️⬇️ این سه تا خط رو اضافه کن ⬇️⬇️⬇️
     implementation("androidx.recyclerview:recyclerview:1.3.2")
     implementation("com.github.topjohnwu.libsu:core:5.2.2")
