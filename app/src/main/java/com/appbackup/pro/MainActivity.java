@@ -72,17 +72,23 @@ public class MainActivity extends AppCompatActivity implements AppListAdapter.On
         progressHelper = new ProgressDialogHelper(this);
 
         // ⭐ چک login
-        if (!authManager.isLoggedIn()) {
+  authManager = AuthManager.getInstance(this);
+        progressHelper = new ProgressDialogHelper(this);
+
+        // ⭐ هر بار اپ باز می‌شه، اینترنت لازمه
+        if (!authManager.hasInternet()) {
+            showNoInternetDialog();
+            return;
+        }
+        
+        // ⭐ اگه license نداره، login
+        if (!authManager.hasStoredLicense()) {
             showLoginDialog();
             return;
         }
         
-        if (authManager.shouldCheck()) {
-            checkAuthAndContinue();
-        } else {
-            initializeApp();
-        }
-    }
+        // ⭐ هر بار اپ باز می‌شه، چک سرور (بدون توجه به shouldCheck)
+        verifyOnStartup();
     
     private void showLoginDialog() {
         EditText editText = new EditText(this);
@@ -113,7 +119,57 @@ public class MainActivity extends AppCompatActivity implements AppListAdapter.On
         
         dialog.show();
     }
+
+        /**
+     * ⭐ Dialog عدم اتصال
+     */
+    private void showNoInternetDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle("📡 No Internet")
+                .setMessage("This app requires an active internet connection.\n\n"
+                    + "Please connect to Wi-Fi or mobile data and try again.")
+                .setCancelable(false)
+                .setPositiveButton("Retry", (d, w) -> recreate())
+                .setNegativeButton("Exit", (d, w) -> finish())
+                .show();
+    }
     
+    /**
+     * ⭐ چک سرور موقع باز شدن اپ (هر بار)
+     */
+    private void verifyOnStartup() {
+        progressHelper.show("Verifying", "Connecting to server...");
+        
+        new Thread(() -> {
+            final boolean ok = authManager.verifyOnlineSync();
+            
+            runOnUiThread(() -> {
+                progressHelper.dismiss();
+                
+                if (ok) {
+                    initializeApp();
+                } else {
+                    // اگه auth fail کرد، یا server unreachable یا license invalid
+                    new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("⚠️ Verification Failed")
+                        .setMessage("Could not verify your license.\n\n"
+                            + "Possible reasons:\n"
+                            + "• No stable internet\n"
+                            + "• Server is down\n"
+                            + "• License deactivated\n"
+                            + "• Session expired")
+                        .setCancelable(false)
+                        .setPositiveButton("Retry", (d, w) -> recreate())
+                        .setNegativeButton("Re-activate", (d, w) -> {
+                            authManager.logout();
+                            recreate();
+                        })
+                        .setNeutralButton("Exit", (d, w) -> finish())
+                        .show();
+                }
+            });
+        }).start();
+    }
     private void performLogin(final AlertDialog dialog, String licenseKey) {
         progressHelper.show("Activating", "Connecting to server...");
         
@@ -596,12 +652,18 @@ public class MainActivity extends AppCompatActivity implements AppListAdapter.On
     }
 
    private void startBackup(final AppInfo app, final String name) {
-        // ⭐ چک auth قبل از backup
-        progressHelper.show("Verifying access", "Please wait...");
+        // ⭐ چک اینترنت
+        if (!authManager.hasInternet()) {
+            showNoInternetForOperation("backup");
+            return;
+        }
+        
+        // ⭐ چک online با سرور
+        progressHelper.show("Verifying access", "Checking license...");
         new Thread(() -> {
-            final boolean authValid = authManager.isAuthValidNow();
+            final boolean ok = authManager.verifyOnlineSync();
             
-            if (!authValid) {
+            if (!ok) {
                 runOnUiThread(() -> {
                     progressHelper.dismiss();
                     showAuthFailDialog("Cannot start backup");
@@ -609,6 +671,7 @@ public class MainActivity extends AppCompatActivity implements AppListAdapter.On
                 return;
             }
             
+            // OK - شروع backup
             runOnUiThread(() -> progressHelper.show("Creating Backup", "Starting..."));
             
             BackupEngine engine = new BackupEngine(MainActivity.this);
@@ -625,29 +688,56 @@ public class MainActivity extends AppCompatActivity implements AppListAdapter.On
                               final RestoreOptions options,
                               final boolean dryRun, final boolean forceMode, 
                               final boolean skipVerify) {
-        // ⭐ چک auth قبل از restore (به جز dryRun که خطری نداره)
-        if (!dryRun) {
-            progressHelper.show("Verifying access", "Please wait...");
-            new Thread(() -> {
-                final boolean authValid = authManager.isAuthValidNow();
-                
-                if (!authValid) {
-                    runOnUiThread(() -> {
-                        progressHelper.dismiss();
-                        showAuthFailDialog("Cannot start restore");
-                    });
-                    return;
-                }
-                
-                runOnUiThread(() -> progressHelper.show("Restoring", "Starting..."));
-                doActualRestore(backupDir, meta, options, false, forceMode, skipVerify);
-            }).start();
+        // ⭐ Dry Run خطری نداره، چک نمی‌کنیم
+        if (dryRun) {
+            doActualRestore(backupDir, meta, options, true, forceMode, skipVerify);
             return;
         }
         
-        // Dry run - بدون چک auth
-        progressHelper.show("Dry Run", "Starting...");
-        doActualRestore(backupDir, meta, options, true, forceMode, skipVerify);
+        // ⭐ چک اینترنت
+        if (!authManager.hasInternet()) {
+            showNoInternetForOperation("restore");
+            return;
+        }
+        
+        // ⭐ چک online با سرور
+        progressHelper.show("Verifying access", "Checking license...");
+        new Thread(() -> {
+            final boolean ok = authManager.verifyOnlineSync();
+            
+            if (!ok) {
+                runOnUiThread(() -> {
+                    progressHelper.dismiss();
+                    showAuthFailDialog("Cannot start restore");
+                });
+                return;
+            }
+            
+            runOnUiThread(() -> progressHelper.show("Restoring", "Starting..."));
+            doActualRestore(backupDir, meta, options, false, forceMode, skipVerify);
+        }).start();
+    }
+    
+    private void doActualRestore(final File backupDir, final BackupMeta meta,
+                                  final RestoreOptions options,
+                                  final boolean dryRun, final boolean forceMode,
+                                  final boolean skipVerify) {
+        if (dryRun) progressHelper.show("Dry Run", "Starting...");
+        
+        new Thread(() -> {
+            RestoreEngine engine = new RestoreEngine(MainActivity.this)
+                    .setOptions(options)
+                    .setDryRun(dryRun)
+                    .setForceMode(forceMode)
+                    .setSkipVerification(skipVerify);
+            engine.setProgressCallback((message, percent) -> progressHelper.update(message, percent));
+            final BackupResult result = engine.restore(backupDir, meta);
+            runOnUiThread(() -> {
+                progressHelper.dismiss();
+                showResultDialog(result, dryRun ? "Dry Run" : "Restore");
+                if (result.isSuccess() && !dryRun) loadApps();
+            });
+        }).start();
     }
     
     private void doActualRestore(final File backupDir, final BackupMeta meta,
@@ -684,6 +774,41 @@ public class MainActivity extends AppCompatActivity implements AppListAdapter.On
         new AlertDialog.Builder(this)
                 .setTitle("⚠️ Authentication Failed")
                 .setMessage(message)
+                .setCancelable(false)
+                .setPositiveButton("Retry", (d, w) -> recreate())
+                .setNegativeButton("Re-activate", (d, w) -> {
+                    authManager.logout();
+                    recreate();
+                })
+                .setNeutralButton("Exit", (d, w) -> finish())
+                .show();
+    }
+    /**
+     * ⭐ Dialog عدم اتصال موقع backup/restore
+     */
+    private void showNoInternetForOperation(String operation) {
+        new AlertDialog.Builder(this)
+                .setTitle("📡 No Internet")
+                .setMessage("Cannot " + operation + ".\n\n"
+                    + "Internet connection is required for this operation.\n"
+                    + "Please connect and try again.")
+                .setPositiveButton("OK", null)
+                .show();
+    }
+    
+    /**
+     * ⭐ Dialog شکست auth
+     */
+    private void showAuthFailDialog(String context) {
+        new AlertDialog.Builder(this)
+                .setTitle("⚠️ Authentication Failed")
+                .setMessage(context + ".\n\n"
+                    + "Could not verify your license with the server.\n\n"
+                    + "Possible reasons:\n"
+                    + "• Internet connection unstable\n"
+                    + "• License has been deactivated\n"
+                    + "• Session has expired\n"
+                    + "• Server is temporarily down")
                 .setCancelable(false)
                 .setPositiveButton("Retry", (d, w) -> recreate())
                 .setNegativeButton("Re-activate", (d, w) -> {
