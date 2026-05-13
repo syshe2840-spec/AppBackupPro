@@ -64,6 +64,7 @@ public class MainActivity extends AppCompatActivity implements AppListAdapter.On
     private boolean uiInitialized = false;
 
     @Override
+    @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
@@ -71,24 +72,21 @@ public class MainActivity extends AppCompatActivity implements AppListAdapter.On
         authManager = AuthManager.getInstance(this);
         progressHelper = new ProgressDialogHelper(this);
 
-        // ⭐ چک login
-  authManager = AuthManager.getInstance(this);
-        progressHelper = new ProgressDialogHelper(this);
-
-        // ⭐ هر بار اپ باز می‌شه، اینترنت لازمه
+        // چک اینترنت
         if (!authManager.hasInternet()) {
             showNoInternetDialog();
             return;
         }
         
-        // ⭐ اگه license نداره، login
+        // چک license محلی
         if (!authManager.hasStoredLicense()) {
             showLoginDialog();
             return;
         }
         
-        // ⭐ هر بار اپ باز می‌شه، چک سرور (بدون توجه به shouldCheck)
+        // چک سرور
         verifyOnStartup();
+    }
     
     private void showLoginDialog() {
         EditText editText = new EditText(this);
